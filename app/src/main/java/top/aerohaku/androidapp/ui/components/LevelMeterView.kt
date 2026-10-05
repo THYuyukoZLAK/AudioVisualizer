@@ -1,5 +1,6 @@
 package top.aerohaku.androidapp.ui.components
 
+import android.os.SystemClock
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -12,7 +13,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -29,6 +32,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.StateFlow
 import top.aerohaku.androidapp.dsp.AudioFrame
+import top.aerohaku.androidapp.dsp.Levels
 import java.util.Locale
 
 /**
@@ -43,10 +47,15 @@ import java.util.Locale
  *
  * ## 关于标尺（[showScale]）
  *
- * 这里画的 dB 刻度是**真 dB**（量程 `VizStyle.METER_FLOOR_DB`..`METER_CEIL_DB`，
- * 即 -60..+6），和频谱图那边刻意用百分比不同 —— 电平表本来就是 dB 域的，标 dB 才有意义。
- * 上端那 6dB 是留给过载的余量，见 [VizStyle.METER_CEIL_DB] 的说明。
+ * 这里画的 dB 刻度是**真 dB**（量程 `VizStyle.METER_FLOOR_DB`..`VizStyle.METER_CEIL_DB`，
+ * 即 -60..0），和频谱图那边刻意用百分比不同 —— 电平表本来就是 dB 域的，标 dB 才有意义。
  * 默认关闭：版式稿要求「无边框、无背景」，标尺本身也是线条。
+ *
+ * ## 削顶红线
+ *
+ * 准峰值顶到满量程时，在 0 dB 位置亮一条红线（`VizStyle.ClipColor`）——
+ * 它是整个界面**唯一**的非黑白颜色。带 [CLIP_HOLD_MS] 的保持时间，
+ * 否则准峰值在阈值附近抖动时红线会闪。
  */
 @Composable
 fun LevelMeterView(
@@ -91,6 +100,13 @@ private fun MeterRow(
       }
     }
   }
+
+  // 削顶指示：准峰值顶到满量程（见 Levels.isClipping）时，在 0 dB 位置亮红线。
+  // 带一点保持时间 —— 准峰值会在阈值附近抖，不保持的话红线会闪。
+  val now = SystemClock.elapsedRealtime()
+  var clipUntil by remember { mutableLongStateOf(0L) }
+  if (Levels.isClipping(peakDb)) clipUntil = now + CLIP_HOLD_MS
+  val clipping = now < clipUntil
 
   Row(
     verticalAlignment = Alignment.CenterVertically,
@@ -148,6 +164,16 @@ private fun MeterRow(
         )
       }
 
+      // 削顶指示画在最后：它是警告，不能被柱子、峰值线或刻度压住。
+      // 位置固定在 0 dB（而非峰值线所在处）—— 它表达的是「顶到满量程了」。
+      if (clipping) {
+        drawRect(
+          color = VizStyle.ClipColor,
+          topLeft = Offset((size.width - CLIP_LINE_WIDTH).coerceAtLeast(0f), barTop),
+          size = Size(CLIP_LINE_WIDTH, barHeight),
+        )
+      }
+
       // 刻度数值最后画，压在柱子上才读得到；贴着画布底部对齐
       ticks.forEach { (db, layout) ->
         val x = VizStyle.meterFraction(db.toFloat()) * size.width
@@ -180,13 +206,12 @@ private fun formatDb(db: Float): String =
   if (db <= VizStyle.METER_FLOOR_DB + 0.05f) "-∞" else String.format(Locale.US, "%.1f", db)
 
 /**
- * 标尺刻度：12dB 一档，**终点是 0 dB**。
+ * 标尺刻度：12dB 一档。
  *
- * 0 以前不标是因为拿它当轨道右边界（贴着边缘只会挤）；现在上端有 +6dB 的余量，
- * 0 dB 正好是「过载与否」的分界，标出来才知道柱子越过去了多少。
- * 下端的 -60 仍不标：那是量程起点，会和柱子起点重合。
+ * 不含 0 与 -60：两端是量程边界，贴着边缘只会挤。
+ * 0 dB 的位置改由**削顶红线**表达 —— 平时它在库外，只有真顶到头才出现。
  */
-private val METER_TICKS_DB = listOf(-48, -36, -24, -12, 0)
+private val METER_TICKS_DB = listOf(-48, -36, -24, -12)
 
 private const val SCALE_LINE_ALPHA = 0.25f
 private const val SCALE_LINE_WIDTH = 1f
@@ -195,6 +220,12 @@ private const val LABEL_WIDTH_DP = 16
 private const val VALUE_WIDTH_DP = 46
 private const val PEAK_LINE_WIDTH = 2.5f
 private const val RMS_ALPHA = 0.88f
+
+/** 削顶红线线宽。比峰值线略粗，因为它要在最边缘仍然醒目 */
+private const val CLIP_LINE_WIDTH = 4f
+
+/** 削顶指示的保持时长 */
+private const val CLIP_HOLD_MS = 700L
 
 /** 柱高占行高的比例 */
 private const val BAR_HEIGHT_RATIO = 0.55f

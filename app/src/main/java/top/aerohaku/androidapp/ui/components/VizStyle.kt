@@ -29,13 +29,20 @@ object VizStyle {
    * 用 60dB 而不是 [Levels.MIN_DB] 的 75dB ——
    * 音乐电平基本落在 -60..0 之间，60dB 量程下分辨率更高、更好读。
    *
-   * 上端**刻意越过 0 dB**：数据层的 dB 允许到 `MAX_DB + HEADROOM_DB`（见 [Levels]），
-   * 以前这里取 0 再用 `coerceIn` 压住，结果过载的部分全糊在右边缘 ——
-   * 看起来就是「柱子老顶着最右边、看不出谁更响」。
-   * 留出这段余量之后，0 dB 才成为一个有意义的刻度。
+   * 上端**就是满量程**：读数由 `peak / 32768` 这类归一化幅度而来，恒 ≤ 0 dB，
+   * 留余量没有意义（这里曾经为了「过载段」放宽到 +6dB，白占了 9% 的宽度且永不生效）。
+   * 真正的「顶到头」改由 [ClipColor] 红线表达。
    */
   const val METER_FLOOR_DB = -60f
-  const val METER_CEIL_DB = Levels.MAX_DB + Levels.HEADROOM_DB
+  const val METER_CEIL_DB = Levels.MAX_DB
+
+  /**
+   * 削顶指示色。
+   *
+   * 整个界面**唯一**的非黑非白颜色，只在准峰值顶到满量程时才出现 ——
+   * 正因为稀有，它才有警示作用。其余一切仍保持纯白。
+   */
+  val ClipColor: Color = Color(0xFFFF3B30)
 
   /** dB → 0..1（电平表用） */
   fun meterFraction(db: Float): Float =

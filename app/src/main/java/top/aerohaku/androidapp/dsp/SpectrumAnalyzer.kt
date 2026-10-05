@@ -124,6 +124,18 @@ class SpectrumAnalyzer(
     private const val PEAK_FALL_DB_PER_SEC = 30f
 
     /**
+     * 准峰值的子窗长度。
+     *
+     * ‼ 峰值不能用「整块的最大绝对值」：16.7ms 块的最大值在音乐上几乎必然贴着满量程
+     * （数字母带峰值本来就压到 -1..0 dBFS），于是 `peakHold` 的「保持」分支被无限刷新，
+     * 回落分支永远执行不到 —— 峰值线会在整首歌里一动不动地钉在 0 dB。
+     *
+     * 改用子窗 RMS 的最大值（即电平表里的「准峰值」）：3ms 短到能跟上鼓点、
+     * 又长到不会被单个采样毛刺带跑，读数会真的随音乐起伏。
+     */
+    private const val QUASI_PEAK_WINDOW_MS = 3f
+
+    /**
      * 产出帧的最低间隔。
      *
      * 目标是 60fps（16.7ms），但采集块到达会有抖动，所以卡在 12ms：
@@ -227,24 +239,43 @@ class SpectrumAnalyzer(
   private fun updateChannelLevels(samples: ShortArray, frames: Int, nowMs: Long, dtMs: Float) {
     var sumL = 0.0
     var sumR = 0.0
-    var peakL = 0
-    var peakR = 0
+
+    // 准峰值：把整块切成固定长度的子窗，取各子窗 RMS 的最大值（见 QUASI_PEAK_WINDOW_MS）
+    val subWindow = (sampleRate * QUASI_PEAK_WINDOW_MS / 1000f).toInt().coerceAtLeast(1)
+    var subSumL = 0.0
+    var subSumR = 0.0
+    var subCount = 0
+    var peakL = 0f
+    var peakR = 0f
 
     var i = 0
     while (i < frames) {
       val left = samples[i * channelCount].toInt()
       val right = if (channelCount > 1) samples[i * channelCount + 1].toInt() else left
-      sumL += left.toDouble() * left
-      sumR += right.toDouble() * right
-      val absL = abs(left)
-      val absR = abs(right)
-      if (absL > peakL) peakL = absL
-      if (absR > peakR) peakR = absR
+      val sqL = left.toDouble() * left
+      val sqR = right.toDouble() * right
+      sumL += sqL
+      sumR += sqR
+      subSumL += sqL
+      subSumR += sqR
+      subCount++
+      if (subCount == subWindow) {
+        peakL = max(peakL, rmsAmplitude(subSumL, subCount))
+        peakR = max(peakR, rmsAmplitude(subSumR, subCount))
+        subSumL = 0.0
+        subSumR = 0.0
+        subCount = 0
+      }
       i++
     }
+    // 不足一个子窗的尾段也要比一比，否则块尾的峰值会被丢掉
+    if (subCount > 0) {
+      peakL = max(peakL, rmsAmplitude(subSumL, subCount))
+      peakR = max(peakR, rmsAmplitude(subSumR, subCount))
+    }
 
-    val rmsL = Levels.linearToDb((sqrt(sumL / frames) / 32768.0).toFloat())
-    val rmsR = Levels.linearToDb((sqrt(sumR / frames) / 32768.0).toFloat())
+    val rmsL = Levels.linearToDb(rmsAmplitude(sumL, frames) / 32768f)
+    val rmsR = Levels.linearToDb(rmsAmplitude(sumR, frames) / 32768f)
 
     meterDb[0] = attackRelease(meterDb[0], rmsL, RMS_FALL_DB_PER_SEC, dtMs)
     meterDb[1] = attackRelease(meterDb[1], rmsR, RMS_FALL_DB_PER_SEC, dtMs)
@@ -254,6 +285,10 @@ class SpectrumAnalyzer(
     meterDb[2] = peakHold(slot = 2, holdIndex = 0, target = peakLdb, nowMs = nowMs, dtMs = dtMs)
     meterDb[3] = peakHold(slot = 3, holdIndex = 1, target = peakRdb, nowMs = nowMs, dtMs = dtMs)
   }
+
+  /** 平方和 + 样本数 → RMS 幅度（与采样同量纲，0..32768） */
+  private fun rmsAmplitude(sumSquares: Double, count: Int): Float =
+    sqrt(sumSquares / count).toFloat()
 
   /** 瞬时上升、缓慢下落 —— 电平表的标准表现 */
   private fun attackRelease(current: Float, target: Float, fallDbPerSec: Float, dtMs: Float): Float =

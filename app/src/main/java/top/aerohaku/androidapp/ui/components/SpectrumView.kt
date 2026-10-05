@@ -31,7 +31,7 @@ import top.aerohaku.androidapp.dsp.SpectrumAnalyzer
  * （mfosu 的模型就是这样，见 `SpectrumAnalyzer.DEFAULT_DISPLAY_GAIN`），
  * 在线性轴上标 dB 会让人误以为纵轴是对数的，属于误导。
  * 需要 dB 读数的地方是电平表，那边才是真 dB
- * （`VizStyle.METER_FLOOR_DB`..`METER_CEIL_DB`，即 -60..+6）。
+ * （`VizStyle.METER_FLOOR_DB`..`VizStyle.METER_CEIL_DB`，即 -60..0）。
  *
  * 默认关闭：版式稿要求「无边框、无背景」，标尺本身也是线条。
  *

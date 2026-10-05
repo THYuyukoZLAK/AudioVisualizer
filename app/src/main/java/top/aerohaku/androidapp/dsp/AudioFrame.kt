@@ -12,27 +12,20 @@ object Levels {
   /** 满量程 */
   const val MAX_DB = 0f
 
-  /**
-   * 允许超过满量程的余量。
-   *
-   * 采样幅度本身不会超过 1.0，但这里的 dB 是拿**分块 RMS / 峰值**算的，
-   * 叠上播放器自己的音量与均衡增益，实际读数会越过 0 dBFS。
-   * 不裁会离谱；只裁到 0 又会让「过载」和「刚好打满」看起来一模一样。
-   *
-   * 显示侧据此把量程上端放到 `MAX_DB + HEADROOM_DB`
-   * （见 `VizStyle.METER_CEIL_DB`）—— 否则这段读数会被压在刻度右边缘、看不出差别。
-   */
-  const val HEADROOM_DB = 6f
-
   private const val FLOOR = 1e-6f
 
-  /** 线性幅度（0..1）→ dBFS */
+  /**
+   * 线性幅度（0..1）→ dBFS。
+   *
+   * ⚠️ 输入恒 ≤ 1.0（调用方拿的是 `peak / 32768` 这种归一化值），
+   * 所以结果**恒 ≤ [MAX_DB]** —— 并不存在「超过 0 dBFS 的读数」。
+   *
+   * 这里曾经写成 `coerceIn(MIN_DB, MAX_DB + 6f)`，看起来像「允许过载」，
+   * 但那个上界**永远达不到**；反倒让显示层以为要留 6dB 的余量
+   * （见 `VizStyle.METER_CEIL_DB`），白白占掉 9% 的宽度。
+   */
   fun linearToDb(amplitude: Float): Float =
-    if (amplitude <= FLOOR) {
-      MIN_DB
-    } else {
-      (20f * log10(amplitude)).coerceIn(MIN_DB, MAX_DB + HEADROOM_DB)
-    }
+    if (amplitude <= FLOOR) MIN_DB else (20f * log10(amplitude)).coerceIn(MIN_DB, MAX_DB)
 
   /** dBFS → 0..1（按 dB 线性，即标准的「对数幅度轴」） */
   fun normalize(db: Float): Float = normalize(db, linearMix = 0f)
