@@ -64,7 +64,43 @@ fun AboutCard(modifier: Modifier = Modifier) {
     }.getOrDefault("（许可证文本读取失败）")
   }
 
+  // 名称/版本都从 PackageManager 读，而不是 BuildConfig —— 见 readAppInfo 的说明
+  val appInfo = remember { readAppInfo(context) }
+
   ScexCard(title = "关于", modifier = modifier) {
+    // ------------------------------------------------------------ 应用信息
+    ScexLabel("应用信息")
+    Text(
+      text = appInfo?.label ?: "AudioVisualizer",
+      color = ScexColors.Heading,
+      style = MaterialTheme.typography.bodyLarge,
+      fontWeight = FontWeight.Bold,
+    )
+    Text(
+      text = if (appInfo == null) {
+        "版本信息读取失败"
+      } else {
+        "版本 ${appInfo.versionName}（versionCode ${appInfo.versionCode}）"
+      },
+      color = ScexColors.Body,
+      style = MaterialTheme.typography.bodySmall,
+    )
+    if (appInfo != null) {
+      Text(
+        text = "包名 ${appInfo.packageName}",
+        color = ScexColors.Body,
+        style = MaterialTheme.typography.bodySmall,
+      )
+      Text(
+        text = "系统要求 Android ${androidVersionName(appInfo.minSdk)} 及以上" +
+          "（minSdk ${appInfo.minSdk} / targetSdk ${appInfo.targetSdk}）",
+        color = ScexColors.Body,
+        style = MaterialTheme.typography.bodySmall,
+      )
+    }
+
+    Spacer(Modifier.height(4.dp))
+
     Text(
       text = "Dev. by 西行寺夜和 / THYuyukoZLAK",
       color = ScexColors.Heading,
@@ -164,6 +200,56 @@ fun AboutCard(modifier: Modifier = Modifier) {
 
 /** logo 显示宽度（原图 560×154，按比例约 72dp 高） */
 private val ABOUT_LOGO_WIDTH = 260.dp
+
+/** 当前已安装这份包自身的元信息，见 [readAppInfo] */
+private data class AppInfo(
+  val label: String,
+  val versionName: String,
+  val versionCode: Long,
+  val packageName: String,
+  val minSdk: Int,
+  val targetSdk: Int,
+)
+
+/**
+ * 读当前**已安装**这一份的版本信息。
+ *
+ * 为什么不用 `BuildConfig`：AGP 8 起 `buildConfig` 默认关闭（本项目也没开），
+ * 而 `PackageManager` 永远可用，读到的还是**实际安装的那一份**的版本，
+ * 不会出现「装了 1.2 但界面显示 1.3」（如果构建时把常量写死就会）。
+ *
+ * 失败就返回 null：这种展示性信息不该让整个「关于」页挂掉。
+ */
+private fun readAppInfo(context: Context): AppInfo? = runCatching {
+  val pm = context.packageManager
+  val pkg = pm.getPackageInfo(context.packageName, 0)
+  val app = pm.getApplicationInfo(context.packageName, 0)
+  AppInfo(
+    label = pm.getApplicationLabel(app).toString(),
+    versionName = pkg.versionName ?: "?",
+    versionCode = pkg.longVersionCode,
+    packageName = context.packageName,
+    minSdk = app.minSdkVersion,
+    targetSdk = app.targetSdkVersion,
+  )
+}.getOrNull()
+
+/**
+ * API level → 面向用户的 Android 版本名。
+ *
+ * 只收录常见几个；没收录的**直接显示数字** —— 宁可显示「29」，
+ * 也不要因为映射表过期而显示一个错的版本名。
+ */
+private fun androidVersionName(api: Int): String = when (api) {
+  29 -> "10"
+  30 -> "11"
+  31, 32 -> "12"
+  33 -> "13"
+  34 -> "14"
+  35 -> "15"
+  36 -> "16"
+  else -> api.toString()
+}
 
 /**
  * ⚠️ **占位待填** —— 仓库地址定下来后改这一行即可。
