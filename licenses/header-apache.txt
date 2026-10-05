@@ -1,0 +1,10 @@
+================================================================
+【四】AndroidX / Jetpack Compose / Kotlin / kotlinx.coroutines
+Apache License, Version 2.0
+Copyright 2019-2026 The Android Open Source Project
+Copyright 2010-2026 JetBrains s.r.o. and Kotlin Programming Language contributors
+================================================================
+
+本应用依赖的运行时与界面框架均以 Maven 依赖形式引入，未修改其源码。
+本应用的界面风格参考了 SCEX 系列站点的自研样式（同样为本项目作者所有）。
+

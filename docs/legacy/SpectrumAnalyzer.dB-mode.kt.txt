@@ -1,0 +1,433 @@
+package top.aerohaku.androidapp.dsp
+
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.cos
+import kotlin.math.floor
+import kotlin.math.ln
+import kotlin.math.log2
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.pow
+import kotlin.math.sqrt
+
+/**
+ * 把 PCM 变成可视化帧：频谱柱 + 波形 + 左右声道电平（dB）。
+ *
+ * 设计要点：
+ * - **纯 JVM**，时间从外面传进来（`nowMs`）→ 可以直接写单元测试，不依赖 Android
+ * - 所有缓冲预分配，`process` 不产生中间垃圾（只在产出帧时分配两个小数组）
+ * - 采集线程读到的 PCM 直接喂进来；因为立体声是**交错**的，左右声道电平在分轨时顺手算掉
+ *
+ * 频谱参数：
+ * - FFT **2048** 点 @44.1kHz → 每 bin 约 21.5Hz（1024 点时 43Hz，低频会出平顶）
+ * - Hann 窗；未做重叠（每块 20ms 出一次分析，已足够）
+ * - 输出 48 条**对数间隔**频带（40Hz ~ 16kHz），符合人耳感知
+ * - **所有频带统一取「频带峰值」**（带带宽偏差修正）—— 见 [bandMagnitude]
+ * - 柱高在 dB 域做「快攻慢放」平滑，视觉上不抖
+ */
+class SpectrumAnalyzer(
+  private val sampleRate: Int,
+  private val channelCount: Int,
+  /** 横向频率分布曲线指数，默认取写死的常量 */
+  frequencyCurveExponent: Float = DEFAULT_FREQUENCY_CURVE_EXPONENT,
+  /** 倾斜补偿（dB/倍频程）。0 = 关闭 */
+  tiltDbPerOctave: Float = DEFAULT_TILT_DB_PER_OCTAVE,
+  /** y 轴映射：0 = 按 dB 线性（对数幅度），1 = 线性幅度 */
+  yAxisLinearMix: Float = DEFAULT_Y_AXIS_LINEAR_MIX,
+) {
+
+  private var curveExponent = frequencyCurveExponent
+  private var tiltPerOctave = tiltDbPerOctave
+  private var linearMix = yAxisLinearMix
+
+  companion object {
+    /**
+     * FFT 点数。
+     * ⚠️ 不能用 1024：@44.1kHz 时 bin 宽 43Hz，而频带从 40Hz 起对数分 48 柱，
+     * 导致 40~100Hz 全落在 bin 1~2 上 → 前 7 根柱子取值完全相同，视觉上是「平顶被截断」。
+     * 2048 点把 bin 宽降到 21.5Hz，再配合下面的窄带插值才能真正拉开差异。
+     */
+    const val FFT_SIZE = 2048
+    const val BAR_COUNT = 48
+    const val WAVEFORM_POINTS = 256
+
+    /** 波形只取最近这么多个样本（约 23ms）—— 太长就看不出波形形状了，与 FFT 尺寸解耦 */
+    private const val WAVEFORM_WINDOW = 1024
+
+    /**
+     * 带宽偏差修正的基准：在 K 个 bin 里取最大值天然偏高。
+     * 随机谱下 `max ≈ 均值 × √(ln K)`，所以取完最大值要除掉这个因子，
+     * 不同宽度的频带才能回到同一尺度（否则高频会因为 bin 多而被凭空抬高）。
+     */
+    private const val BAND_PEAK_BIAS_BASE = 1f
+
+    /**
+     * 倾斜补偿（tilt）：每向上一个倍频程抬高多少 dB。
+     *
+     * 专业频谱仪的标配。常见约定：
+     *  - `+3 dB/oct`：让**粉红噪声**在等带宽（线性 bin）分析仪上显示为平直
+     *  - `+4.5 dB/oct`：1/3 倍频程 RTA 常用的「粉红倾斜」，低频更突出
+     *  - 符号：这是**低频增益**，用 `log2(参考频率 / 频带中心频率)`，
+     *    低频为正（抬高）、高频为负（压低）
+     *
+     * ⚠️ **实测后默认改为 0（关闭）**。
+     *
+     * 曾经取 4.5 dB/oct，理由是不做倾斜整条谱会呈下降斜坡。但真机逐帧实测（把
+     * 前 12 根柱子的 dB 打进 logcat 再分析 504 帧）发现：
+     *  - 去掉 tilt 后各频带**本来就是平的**（54Hz / 97Hz / 930Hz 的平均高度分别是
+     *    画面的 61% / 61% / 50%）—— 因为 [bandMagnitude] 取频带峰值 + 带宽偏差修正
+     *    已经把自然滚降拉平了
+     *  - 再加上 +4.5 dB/oct 后，54Hz 被抬高 **+19dB**，常驻在画面 **87%** 的位置，
+     *    鼓点只能在上面叠出 17dB 的小涟漪 → 观感就是「低频绝大多数时间都很高、不跳」
+     *
+     * 所以这里默认 **0**：让各频带回到同一起跑线，谁有声谁才高。
+     */
+    const val DEFAULT_TILT_DB_PER_OCTAVE = 0f
+
+    /** 倾斜的 0 dB 参考频率（此处不增不减） */
+    private const val TILT_REFERENCE_HZ = 1_000.0
+
+    /**
+     * 横向频率分布曲线的指数（「弯曲程度」）。
+     *
+     * 频带边缘按 `f = fMin × (fMax/fMin)^((i/N)^q)` 分布：
+     *  - `q = 1.0` —— 纯对数轴：每个倍频程等宽，低频占大片横向空间
+     *    （40~200Hz 会吃掉 **27%** 宽度，看起来「低频那一块特别宽」）
+     *  - `q = 0.6` —— 低频压缩、高频展开，接近常见音乐频谱仪/播放器的观感 ← **当前采用**
+     *    （40~200Hz 只占 **11%**，而 4k~16kHz 从 30% 扩到 36%）
+     *  - `q → 0` —— 退化为线性频率轴：低频只占极窄一条，音乐内容基本看不到
+     *
+     * ⚠️ 先写死成常量，后续做成设置项（和 tilt 一样做成参数以便测试）。
+     */
+    private const val DEFAULT_FREQUENCY_CURVE_EXPONENT = 0.6f
+
+    /**
+     * 给定采样率下每根柱子的中心频率，供 UI 画横向频率刻度。
+     * 与 `init` 用同一套公式，保证刻度与柱子**严格对齐**。
+     */
+    fun bandCenterFrequencies(
+      sampleRate: Int,
+      frequencyCurveExponent: Float = DEFAULT_FREQUENCY_CURVE_EXPONENT,
+    ): FloatArray {
+      val topFreq = min(MAX_FREQ, sampleRate / 2.0 * 0.95)
+      val ratio = topFreq / MIN_FREQ
+      val curve = frequencyCurveExponent.toDouble()
+      return FloatArray(BAR_COUNT) { bar ->
+        val low = MIN_FREQ * ratio.pow((bar.toDouble() / BAR_COUNT).pow(curve))
+        val high = MIN_FREQ * ratio.pow(((bar + 1).toDouble() / BAR_COUNT).pow(curve))
+        sqrt(low * high).toFloat()
+      }
+    }
+
+    /** 频谱下限 / 上限频率 */
+    private const val MIN_FREQ = 40.0
+    private const val MAX_FREQ = 16_000.0
+
+    /**
+     * y 轴映射默认值：`0` = 纯 dB（对数幅度）轴，`1` = 纯线性幅度轴，中间为线性混合。
+     *
+     * 取 0.45 是为了得到「安静时压在低位、来劲时窜高」的观感：
+     * 纯 dB 轴下 -10dB 与 -30dB 的高度差只有 27%，而线性幅度轴下是 10 倍，
+     * 于是同样一段鼓点、同样 20dB 的电平变化，视觉幅度大不相同。
+     */
+    const val DEFAULT_Y_AXIS_LINEAR_MIX = 0.45f
+
+    /** 柱状图下落速度（dB/秒）与上升插值系数 */
+    private const val BAR_FALL_DB_PER_SEC = 90f
+    private const val BAR_ATTACK = 0.7f
+
+    /** 电平表：RMS 下落速度 */
+    private const val RMS_FALL_DB_PER_SEC = 26f
+
+    /** 电平表：峰值保持时长与随后下落速度 */
+    private const val PEAK_HOLD_MS = 1_200L
+    private const val PEAK_FALL_DB_PER_SEC = 30f
+
+    /** 产出帧的最低间隔（约 40fps 上限），避免把 UI 刷爆 */
+    private const val MIN_FRAME_INTERVAL_MS = 24L
+  }
+
+  private val fft = Fft(FFT_SIZE)
+
+  private val window = FloatArray(FFT_SIZE) {
+    (0.5 - 0.5 * cos(2.0 * PI * it / (FFT_SIZE - 1))).toFloat()
+  }
+
+  private val re = FloatArray(FFT_SIZE)
+  private val im = FloatArray(FFT_SIZE)
+  private val mags = FloatArray(fft.binCount)
+
+  /** 单声道混合样本的环形缓冲（最旧样本位于 [ringWrite]） */
+  private val monoRing = FloatArray(FFT_SIZE)
+  private var ringWrite = 0
+  private var filled = 0
+
+  /** 每根柱子对应的**分数** bin 区间（不是整数），以及频率中心与倾斜补偿 */
+  private val barStartBinX = FloatArray(BAR_COUNT)
+  private val barEndBinX = FloatArray(BAR_COUNT)
+  private val barCenterHz = FloatArray(BAR_COUNT)
+  private val barTiltDb = FloatArray(BAR_COUNT)
+  private val barDb = FloatArray(BAR_COUNT) { Levels.MIN_DB }
+
+  /** 0=rmsL 1=rmsR 2=peakL 3=peakR */
+  private val meterDb = FloatArray(4) { Levels.MIN_DB }
+  private val peakHoldUntilMs = LongArray(2)
+
+  private var lastLevelMs = -1L
+  private var lastFrameMs = -1L
+
+  init {
+    rebuildBandPlan()
+  }
+
+  /**
+   * 运行时改参（仅供**临时调试滑杆**使用；调好后会把值写死在常量里、删掉调用方）。
+   * 改完会重建频带表并清空柱高，所以视觉上会「重新起跳」一次。
+   */
+  fun reconfigure(frequencyCurveExponent: Float, tiltDbPerOctave: Float, yAxisLinearMix: Float) {
+    linearMix = yAxisLinearMix
+    if (frequencyCurveExponent == curveExponent && tiltDbPerOctave == tiltPerOctave) return
+    curveExponent = frequencyCurveExponent
+    tiltPerOctave = tiltDbPerOctave
+    rebuildBandPlan()
+    barDb.fill(Levels.MIN_DB)
+  }
+
+  private fun rebuildBandPlan() {
+    val nyquist = sampleRate / 2.0
+    val topFreq = min(MAX_FREQ, nyquist * 0.95)
+    val ratio = topFreq / MIN_FREQ
+    val binCount = FFT_SIZE / 2
+    val curve = curveExponent.toDouble()
+
+    // 中心频率表与频带边界用同一套公式，保证 UI 刻度与柱子严格对齐
+    bandCenterFrequencies(sampleRate, curveExponent).copyInto(barCenterHz)
+    for (bar in 0 until BAR_COUNT) {
+      val low = MIN_FREQ * ratio.pow((bar.toDouble() / BAR_COUNT).pow(curve))
+      val high = MIN_FREQ * ratio.pow(((bar + 1).toDouble() / BAR_COUNT).pow(curve))
+      barStartBinX[bar] = (low * FFT_SIZE / sampleRate).toFloat().coerceIn(1f, binCount.toFloat())
+      barEndBinX[bar] = (high * FFT_SIZE / sampleRate).toFloat().coerceIn(1f, binCount.toFloat())
+      // log2(参考/中心)：低频得到正补偿（抬高），高频得到负补偿（压低）
+      barTiltDb[bar] = (tiltPerOctave * log2(TILT_REFERENCE_HZ / barCenterHz[bar])).toFloat()
+    }
+  }
+
+  /** 供 UI 画刻度/诊断用：频带的几何中心频率 */
+  fun bandCenterHz(bar: Int): Float = barCenterHz[bar]
+
+  /** 供测试用：某根柱子当前的倾斜补偿量（dB） */
+  fun bandTiltDb(bar: Int): Float = barTiltDb[bar]
+
+  fun reset() {
+    monoRing.fill(0f)
+    barDb.fill(Levels.MIN_DB)
+    meterDb.fill(Levels.MIN_DB)
+    peakHoldUntilMs.fill(0L)
+    ringWrite = 0
+    filled = 0
+    lastLevelMs = -1L
+    lastFrameMs = -1L
+  }
+
+  /**
+   * 消费一块**交错** PCM。
+   * 返回 null 表示这一块还没到产出间隔（电平仍在内部继续更新）。
+   */
+  fun process(samples: ShortArray, count: Int, nowMs: Long): AudioFrame? {
+    val frames = count / channelCount
+    if (frames <= 0) return null
+
+    val levelDtMs = elapsedSinceLastLevel(nowMs)
+    updateChannelLevels(samples, frames, nowMs, levelDtMs)
+    pushToRing(samples, frames)
+
+    val frameDtMs = if (lastFrameMs < 0L) 20f else (nowMs - lastFrameMs).coerceIn(1L, 250L).toFloat()
+    val due = lastFrameMs < 0L || nowMs - lastFrameMs >= MIN_FRAME_INTERVAL_MS
+    if (!due) return null
+
+    lastFrameMs = nowMs
+    analyzeSpectrum(frameDtMs)
+    return buildFrame()
+  }
+
+  // ------------------------------------------------------------------ 电平
+
+  private fun elapsedSinceLastLevel(nowMs: Long): Float {
+    val dt = if (lastLevelMs < 0L) 20f else (nowMs - lastLevelMs).coerceIn(1L, 250L).toFloat()
+    lastLevelMs = nowMs
+    return dt
+  }
+
+  private fun updateChannelLevels(samples: ShortArray, frames: Int, nowMs: Long, dtMs: Float) {
+    var sumL = 0.0
+    var sumR = 0.0
+    var peakL = 0
+    var peakR = 0
+
+    var i = 0
+    while (i < frames) {
+      val left = samples[i * channelCount].toInt()
+      val right = if (channelCount > 1) samples[i * channelCount + 1].toInt() else left
+      sumL += left.toDouble() * left
+      sumR += right.toDouble() * right
+      val absL = abs(left)
+      val absR = abs(right)
+      if (absL > peakL) peakL = absL
+      if (absR > peakR) peakR = absR
+      i++
+    }
+
+    val rmsL = Levels.linearToDb((sqrt(sumL / frames) / 32768.0).toFloat())
+    val rmsR = Levels.linearToDb((sqrt(sumR / frames) / 32768.0).toFloat())
+
+    meterDb[0] = attackRelease(meterDb[0], rmsL, RMS_FALL_DB_PER_SEC, dtMs)
+    meterDb[1] = attackRelease(meterDb[1], rmsR, RMS_FALL_DB_PER_SEC, dtMs)
+
+    val peakLdb = Levels.linearToDb(peakL / 32768f)
+    val peakRdb = Levels.linearToDb(peakR / 32768f)
+    meterDb[2] = peakHold(slot = 2, holdIndex = 0, target = peakLdb, nowMs = nowMs, dtMs = dtMs)
+    meterDb[3] = peakHold(slot = 3, holdIndex = 1, target = peakRdb, nowMs = nowMs, dtMs = dtMs)
+  }
+
+  /** 瞬时上升、缓慢下落 —— 电平表的标准表现 */
+  private fun attackRelease(current: Float, target: Float, fallDbPerSec: Float, dtMs: Float): Float =
+    if (target >= current) target else max(target, current - fallDbPerSec * dtMs / 1000f)
+
+  private fun peakHold(slot: Int, holdIndex: Int, target: Float, nowMs: Long, dtMs: Float): Float {
+    if (target >= meterDb[slot]) {
+      meterDb[slot] = target
+      peakHoldUntilMs[holdIndex] = nowMs + PEAK_HOLD_MS
+      return target
+    }
+    if (nowMs >= peakHoldUntilMs[holdIndex]) {
+      meterDb[slot] = max(target, meterDb[slot] - PEAK_FALL_DB_PER_SEC * dtMs / 1000f)
+    }
+    return meterDb[slot]
+  }
+
+  // ------------------------------------------------------------------ 频谱
+
+  private fun pushToRing(samples: ShortArray, frames: Int) {
+    var w = ringWrite
+    var i = 0
+    while (i < frames) {
+      val left = samples[i * channelCount]
+      val right = if (channelCount > 1) samples[i * channelCount + 1] else left
+      monoRing[w] = (left + right) * 0.5f / 32768f
+      w++
+      if (w == FFT_SIZE) w = 0
+      i++
+    }
+    ringWrite = w
+    filled = min(FFT_SIZE, filled + frames)
+  }
+
+  private fun analyzeSpectrum(dtMs: Float) {
+    val ready = filled >= FFT_SIZE
+    // 环形缓冲里最旧的样本在 ringWrite；未填满时前半段是 0（只是启动瞬间的过渡）
+    for (i in 0 until FFT_SIZE) {
+      val index = ringWrite + i
+      val sample = if (ready) monoRing[if (index >= FFT_SIZE) index - FFT_SIZE else index] else 0f
+      re[i] = sample * window[i]
+      im[i] = 0f
+    }
+
+    fft.transform(re, im)
+    fft.magnitudes(re, im, mags)
+
+    val fallDb = BAR_FALL_DB_PER_SEC * dtMs / 1000f
+
+    for (bar in 0 until BAR_COUNT) {
+      // 频带电平（dB）+ 倾斜补偿。
+      // ⚠️ 数字静音（幅度恰为 0，电平落在显示下限）时**不施加倾斜**：
+      // 否则低频会一直顶着一个被抬高的「虚假基线」，看起来像背景里一直有低音。
+      val measured = Levels.linearToDb(bandMagnitude(bar))
+      val target = if (measured <= Levels.MIN_DB) Levels.MIN_DB else measured + barTiltDb[bar]
+      val current = barDb[bar]
+      barDb[bar] = if (target > current) {
+        current + (target - current) * BAR_ATTACK
+      } else {
+        max(target, current - fallDb)
+      }
+    }
+  }
+
+  /**
+   * 取一根柱子的幅度。
+   *
+   * **所有频带用同一条规则**：
+   *
+   * 1. **宽频带：取区间内的峰值**（最强的那个 bin）
+   *    —— 这是让「几个鲜明的峰」立起来的关键。
+   *    用平均功率的话，宽带会把单个谐波/共振峰抹平，音乐画出来就是**一条平滑斜坡**。
+   * 2. **窄于一个 bin 的频带：在频带中心做线性插值**
+   *    —— 否则多根低频柱会共用同一个 bin，取值完全相等，变成一片平顶。
+   * 3. **带宽偏差修正**：在 K 个 bin 里取最大值天然偏高（随机谱下约 `√(ln K)`），
+   *    除掉这个因子后，不同宽度的频带才在同一尺度上。
+   *
+   * ⚠️ 代价：峰值与频带宽度不是完全无关的量 —— 对**单音**来说高频段会偏低几 dB，
+   * 对**宽带噪声**则大致拉平。音乐属于后者，所以取峰值是对的取舍。
+   */
+  private fun bandMagnitude(bar: Int): Float {
+    val startX = barStartBinX[bar]
+    val endX = barEndBinX[bar]
+
+    // 窄带：中心插值。否则相邻低频柱会落在同一个 bin 上
+    if (endX - startX <= 1f && endX < mags.size - 1) {
+      return interpolateMagnitude((startX + endX) * 0.5f)
+    }
+
+    val first = floor(startX).toInt().coerceIn(0, mags.size - 1)
+    val last = ceil(endX).toInt().coerceIn(first, mags.size - 1)
+    var peak = 0f
+    for (bin in first..last) {
+      if (mags[bin] > peak) peak = mags[bin]
+    }
+
+    val examined = (last - first + 1).toFloat()
+    return peak / sqrt(max(BAND_PEAK_BIAS_BASE, ln(examined)))
+  }
+
+  /** 在分数 bin 位置上对**幅度**做线性插值 */
+  private fun interpolateMagnitude(position: Float): Float {
+    val lastIndex = mags.size - 1
+    val clamped = position.coerceIn(0f, lastIndex.toFloat())
+    val low = clamped.toInt().coerceAtMost(lastIndex - 1)
+    val fraction = clamped - low
+    return mags[low] * (1f - fraction) + mags[low + 1] * fraction
+  }
+
+  private fun buildFrame(): AudioFrame {
+    val spectrum = FloatArray(BAR_COUNT) { Levels.normalize(barDb[it], linearMix) }
+
+    // 波形：只取环形缓冲里**最近** WAVEFORM_WINDOW 个单声道样本，
+    // 每 stride 个取绝对值最大的一个（保包络）。
+    // 注意不能跟着 FFT_SIZE 一起变长，否则波形会挤成一条直线。
+    val waveform = FloatArray(WAVEFORM_POINTS)
+    val stride = WAVEFORM_WINDOW / WAVEFORM_POINTS
+    val windowOffset = FFT_SIZE - WAVEFORM_WINDOW
+    for (point in 0 until WAVEFORM_POINTS) {
+      var value = 0f
+      val base = ringWrite + windowOffset + point * stride
+      for (k in 0 until stride) {
+        val index = base + k
+        val sample = monoRing[if (index >= FFT_SIZE) index - FFT_SIZE else index]
+        if (abs(sample) > abs(value)) value = sample
+      }
+      waveform[point] = value
+    }
+
+    return AudioFrame(
+      spectrum = spectrum,
+      waveform = waveform,
+      rmsDbL = meterDb[0],
+      rmsDbR = meterDb[1],
+      peakDbL = meterDb[2],
+      peakDbR = meterDb[3],
+      stereo = channelCount > 1,
+      sampleRate = sampleRate,
+    )
+  }
+}

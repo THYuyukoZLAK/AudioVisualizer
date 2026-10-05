@@ -1,0 +1,11 @@
+================================================================
+【三】JetBrains Mono 字体
+SIL Open Font License, Version 1.1
+Copyright 2020 The JetBrains Mono Project Authors
+https://github.com/JetBrains/JetBrainsMono
+================================================================
+
+本应用在 res/font/ 下打包了该字体的两个未修改副本
+（jetbrains_mono_regular.ttf、jetbrains_mono_bold.ttf），
+用于设置界面与诊断文本；字体本身未做任何改动，也未使用保留字体名。
+

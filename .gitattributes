@@ -1,0 +1,33 @@
+# 统一行尾。不写这一份的话，Windows 上 CRLF、Linux/macOS 上 LF，
+# 别人 clone 之后 git status 会莫名其妙一片红，diff 也全是整文件重写。
+
+* text=auto eol=lf
+
+# --- Windows 专用脚本：必须 CRLF -----------------------------------------
+# .ps1 尤其要注意：PowerShell 5.1 对 LF 行尾虽然能跑，
+# 但和记事本等工具的往返编辑容易出岔子。
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# --- Gradle wrapper：必须 LF ---------------------------------------------
+# gradlew 在 Linux/macOS 上要 chmod +x 后直接执行，
+# CRLF 会让 shebang 行带上 \r，报 "bad interpreter: No such file or directory"。
+gradlew  text eol=lf
+*.sh     text eol=lf
+gradle/wrapper/gradle-wrapper.jar  binary
+
+# --- 二进制：不做任何转换 ------------------------------------------------
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.webp  binary
+*.ttf   binary
+*.otf   binary
+*.jar   binary
+*.so    binary
+*.zip   binary
+
+# --- 生成物：折叠 diff，并且不计入语言统计 ------------------------------
+# 由 tools/make-licenses.ps1 拼出来，改动没有逐行评审的价值。
+app/src/main/res/raw/third_party_licenses.txt  -diff linguist-generated

@@ -1,0 +1,410 @@
+package top.aerohaku.androidapp.dsp
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import kotlin.math.PI
+import kotlin.math.sin
+import kotlin.math.sqrt
+
+/**
+ * FFT 与频谱分析器的单元测试。
+ * 两者都是纯 JVM 逻辑（时间由外部传入），所以可以直接跑。
+ */
+class FftTest {
+
+  private fun binOf(freq: Double, sampleRate: Int, size: Int) = freq * size / sampleRate
+
+  @Test
+  fun `直流信号能量全部落在 0 号 bin`() {
+    val size = 64
+    val fft = Fft(size)
+    val re = FloatArray(size) { 1f }
+    val im = FloatArray(size)
+    val mags = FloatArray(fft.binCount)
+
+    fft.transform(re, im)
+    fft.magnitudes(re, im, mags)
+
+    // 全 1 输入 → 0 号 bin 归一化后应为 1，其余接近 0
+    assertEquals(1f, mags[0], 1e-3f)
+    for (i in 1 until fft.binCount) {
+      assertTrue("bin $i 应为 0，实际 ${mags[i]}", mags[i] < 1e-3f)
+    }
+  }
+
+  @Test
+  fun `满量程正弦的谱峰归一化后约为 1`() {
+    val size = 1024
+    val fft = Fft(size)
+    val re = FloatArray(size) { sin(2 * PI * 100 * it / size).toFloat() }
+    val im = FloatArray(size)
+    val mags = FloatArray(fft.binCount)
+
+    fft.transform(re, im)
+    fft.magnitudes(re, im, mags)
+
+    val peak = mags.max()
+    assertEquals(1f, peak, 0.02f)
+  }
+
+  @Test
+  fun `1kHz 正弦落在正确的 bin 上`() {
+    val sampleRate = 44_100
+    val size = 1024
+    val freq = 1_000.0
+    val fft = Fft(size)
+    val re = FloatArray(size) { sin(2 * PI * freq * it / sampleRate).toFloat() }
+    val im = FloatArray(size)
+    val mags = FloatArray(fft.binCount)
+
+    fft.transform(re, im)
+    fft.magnitudes(re, im, mags)
+
+    val expectedBin = Math.round(binOf(freq, sampleRate, size)).toInt()
+    val actualBin = mags.indices.maxByOrNull { mags[it] }!!
+    assertEquals(expectedBin, actualBin)
+  }
+
+  @Test
+  fun `两个正弦应出现两个谱峰`() {
+    val sampleRate = 44_100
+    val size = 1024
+    // 刻意选**整数 bin 对齐**的频率：矩形窗下非整数 bin 会有扇贝损失（最多 -3.9dB），
+    // 会让幅度断言变得不确定性；bin 对齐时能量精确落在该 bin，其余整数 bin 为 0。
+    val binLow = 12
+    val binHigh = 93
+    val freqLow = binLow * sampleRate.toDouble() / size
+    val freqHigh = binHigh * sampleRate.toDouble() / size
+
+    val fft = Fft(size)
+    val re = FloatArray(size) {
+      (sin(2 * PI * freqLow * it / sampleRate) + sin(2 * PI * freqHigh * it / sampleRate)).toFloat() * 0.5f
+    }
+    val im = FloatArray(size)
+    val mags = FloatArray(fft.binCount)
+
+    fft.transform(re, im)
+    fft.magnitudes(re, im, mags)
+
+    assertTrue("bin $binLow 幅度应约 0.5，实际 ${mags[binLow]}", mags[binLow] > 0.45f)
+    assertTrue("bin $binHigh 幅度应约 0.5，实际 ${mags[binHigh]}", mags[binHigh] > 0.45f)
+    // 中间频段应该是安静的
+    assertTrue("中间频段应为 0，实际 ${mags[(binLow + binHigh) / 2]}", mags[(binLow + binHigh) / 2] < 0.01f)
+    // 峰值确实位于这两个 bin
+    val loudest = mags.indices.maxByOrNull { mags[it] }!!
+    assertTrue(loudest == binLow || loudest == binHigh)
+  }
+
+  @Test(expected = IllegalArgumentException::class)
+  fun `非 2 的幂长度应报错`() {
+    Fft(1000)
+  }
+
+  // ------------------------------------------------------------------ 分析器
+
+  private fun stereoChunk(
+    frames: Int,
+    sampleRate: Int,
+    leftAmplitude: Double,
+    leftFreq: Double,
+    rightAmplitude: Double,
+    rightFreq: Double,
+    offsetFrames: Int,
+  ): ShortArray {
+    val out = ShortArray(frames * 2)
+    for (i in 0 until frames) {
+      val n = i + offsetFrames
+      out[i * 2] = (sin(2 * PI * leftFreq * n / sampleRate) * leftAmplitude * 32767).toInt().toShort()
+      out[i * 2 + 1] = (sin(2 * PI * rightFreq * n / sampleRate) * rightAmplitude * 32767).toInt().toShort()
+    }
+    return out
+  }
+
+  @Test
+  fun `左声道响右声道静音时左右电平应明显不同`() {
+    val sampleRate = 44_100
+    val analyzer = SpectrumAnalyzer(sampleRate, channelCount = 2)
+    val chunkFrames = sampleRate / 50 // 20ms
+
+    var frame: AudioFrame? = null
+    var offset = 0
+    repeat(40) { index ->
+      val chunk = stereoChunk(chunkFrames, sampleRate, 0.9, 440.0, 0.0, 440.0, offset)
+      offset += chunkFrames
+      analyzer.process(chunk, chunk.size, index * 20L)?.let { frame = it }
+    }
+
+    val result = requireNotNull(frame) { "应该产出过帧" }
+    assertTrue("应识别为立体声", result.stereo)
+    assertTrue("左声道 RMS 应接近 -1dB，实际 ${result.rmsDbL}", result.rmsDbL > -6f)
+    assertTrue("右声道应为静音，实际 ${result.rmsDbR}", result.rmsDbR <= Levels.MIN_DB + 0.01f)
+  }
+
+  @Test
+  fun `单声道输入时 stereo 标记为 false 且左右电平相同`() {
+    val sampleRate = 44_100
+    val analyzer = SpectrumAnalyzer(sampleRate, channelCount = 1)
+    val chunkFrames = sampleRate / 50
+
+    var frame: AudioFrame? = null
+    var offset = 0
+    repeat(40) { index ->
+      val chunk = ShortArray(chunkFrames) { i ->
+        (sin(2 * PI * 440.0 * (i + offset) / sampleRate) * 0.5 * 32767).toInt().toShort()
+      }
+      offset += chunkFrames
+      analyzer.process(chunk, chunk.size, index * 20L)?.let { frame = it }
+    }
+
+    val result = requireNotNull(frame)
+    assertEquals(false, result.stereo)
+    assertEquals(result.rmsDbL, result.rmsDbR, 0.001f)
+  }
+
+  @Test
+  fun `1kHz 正弦应落在 1kHz 所在的频带柱上`() {
+    val sampleRate = 44_100
+    val analyzer = SpectrumAnalyzer(sampleRate, channelCount = 2)
+    val chunkFrames = sampleRate / 50
+
+    var frame: AudioFrame? = null
+    var offset = 0
+    repeat(40) { index ->
+      val chunk = stereoChunk(chunkFrames, sampleRate, 0.9, 1_000.0, 0.9, 1_000.0, offset)
+      offset += chunkFrames
+      analyzer.process(chunk, chunk.size, index * 20L)?.let { frame = it }
+    }
+
+    val spectrum = requireNotNull(frame).spectrum
+    assertEquals(SpectrumAnalyzer.BAR_COUNT, spectrum.size)
+    val loudestBar = spectrum.indices.maxByOrNull { spectrum[it] }!!
+    // 不硬编码柱号：从频带中心频率反推，这样调整横向分布曲线时测试不会碎。
+    // 允许 ±1：单音落在频带边界上时，「bin 区间包含它」的那根柱未必就是「中心离它最近」的那根。
+    val expectedBar = (0 until SpectrumAnalyzer.BAR_COUNT)
+      .minByOrNull { kotlin.math.abs(analyzer.bandCenterHz(it) - 1_000f) }!!
+    assertTrue(
+      "1kHz 应落在柱 $expectedBar 附近，实际 $loudestBar",
+      kotlin.math.abs(loudestBar - expectedBar) <= 1,
+    )
+  }
+
+  @Test
+  fun `波形长度正确且幅度合理`() {
+    val sampleRate = 44_100
+    val analyzer = SpectrumAnalyzer(sampleRate, channelCount = 2)
+    val chunkFrames = sampleRate / 50
+
+    var frame: AudioFrame? = null
+    var offset = 0
+    repeat(40) { index ->
+      val chunk = stereoChunk(chunkFrames, sampleRate, 0.8, 440.0, 0.8, 440.0, offset)
+      offset += chunkFrames
+      analyzer.process(chunk, chunk.size, index * 20L)?.let { frame = it }
+    }
+
+    val waveform = requireNotNull(frame).waveform
+    assertEquals(SpectrumAnalyzer.WAVEFORM_POINTS, waveform.size)
+    val rms = sqrt(waveform.sumOf { it.toDouble() * it } / waveform.size)
+    assertTrue("波形 RMS 应在合理范围，实际 $rms", rms in 0.3..0.9)
+  }
+
+  @Test
+  fun `静音时所有柱为 0`() {
+    val sampleRate = 44_100
+    val analyzer = SpectrumAnalyzer(sampleRate, channelCount = 2)
+    val chunkFrames = sampleRate / 50
+    val silence = ShortArray(chunkFrames * 2)
+
+    var frame: AudioFrame? = null
+    repeat(40) { index ->
+      analyzer.process(silence, silence.size, index * 20L)?.let { frame = it }
+    }
+
+    val result = requireNotNull(frame)
+    assertTrue("静音时不应有柱亮起", result.spectrum.all { it == 0f })
+  }
+
+  @Test
+  fun `低频相邻柱不应全部相同（插值修复平顶）`() {
+    val sampleRate = 44_100
+    val analyzer = SpectrumAnalyzer(sampleRate, channelCount = 2)
+    val chunkFrames = sampleRate / 50
+
+    // 固定种子的伪随机噪声，保证可重复；用噪声是因为它天然在低频也有连续能量
+    val random = java.util.Random(42L)
+    var frame: AudioFrame? = null
+    repeat(40) { index ->
+      val chunk = ShortArray(chunkFrames * 2) { (random.nextInt(65536) - 32768).toShort() }
+      analyzer.process(chunk, chunk.size, index * 20L)?.let { frame = it }
+    }
+
+    val spectrum = requireNotNull(frame).spectrum
+    // 修复前：FFT 1024 时 40~100Hz 全在 bin 1~2，前 8 根柱取值完全相同 → 平顶
+    val distinct = spectrum.take(8).map { (it * 1000).toInt() }.distinct().size
+    assertTrue("前 8 根低频柱应至少出现 5 种不同高度，实际 $distinct 种：${spectrum.take(8).toList()}", distinct >= 5)
+  }
+
+  @Test
+  fun `同一音量的正弦落在任何频带都应读出接近的电平`() {
+    val sampleRate = 44_100
+
+    // 关键性质：所有频带用的是同一个物理量（频带电平），
+    // 所以同一音量的单音无论落在低频还是高频，柱高应该基本一致。
+    // 旧实现（宽带取区间最大值）在高频会额外抬高约 10·log10(K) dB，该断言会失败。
+    // 注意：这里必须关掉倾斜补偿（tilt=0），因为倾斜本来就是故意的频率相关增益。
+    val peaks = listOf(250.0, 1_000.0, 4_000.0, 10_000.0).map { frequency ->
+      // tilt / y 轴映射都必须显式关掉：它们本来就是故意的频率相关增益 / 非线性映射，
+      // 这里要测的是「频带电平」这个物理量本身是否一致。
+      val analyzer = SpectrumAnalyzer(
+        sampleRate,
+        channelCount = 2,
+        tiltDbPerOctave = 0f,
+        yAxisLinearMix = 0f,
+      )
+      val chunkFrames = sampleRate / 50
+      var frame: AudioFrame? = null
+      var offset = 0
+      repeat(50) { index ->
+        val chunk = stereoChunk(chunkFrames, sampleRate, 0.5, frequency, 0.5, frequency, offset)
+        offset += chunkFrames
+        analyzer.process(chunk, chunk.size, index * 20L)?.let { frame = it }
+      }
+      val spectrum = requireNotNull(frame).spectrum
+      val peakBar = spectrum.max()
+      val peakIndex = spectrum.indices.maxByOrNull { spectrum[it] }!!
+      "${frequency.toInt()}Hz→柱$peakIndex=${(peakBar * 1000).toInt() / 1000f}" to peakBar
+    }
+
+    val values = peaks.map { it.second }
+    val minimum = values.min()
+    val spread = values.max() - minimum
+    assertTrue("单音应确实点亮了柱子，实际最小值 $minimum", minimum > 0.5f)
+    assertTrue(
+      "各频带读数应接近，实际：${peaks.joinToString(" ") { it.first }}（极差 $spread）",
+      spread < 0.15f,
+    )
+  }
+
+  @Test
+  fun `倾斜补偿应抬高低频、压低高频且单调`() {
+    // 默认已经是 0（关闭），所以这里显式传入一个非零值来测这段逻辑
+    val analyzer = SpectrumAnalyzer(44_100, channelCount = 2, tiltDbPerOctave = 4.5f)
+    val last = SpectrumAnalyzer.BAR_COUNT - 1
+
+    assertTrue("最低频应被明显抬高，实际 ${analyzer.bandTiltDb(0)}", analyzer.bandTiltDb(0) > 15f)
+    assertTrue("最高频应被明显压低，实际 ${analyzer.bandTiltDb(last)}", analyzer.bandTiltDb(last) < -15f)
+
+    for (bar in 1..last) {
+      assertTrue(
+        "倾斜应随频率单调下降：柱 ${bar - 1}=${analyzer.bandTiltDb(bar - 1)} vs 柱 $bar=${analyzer.bandTiltDb(bar)}",
+        analyzer.bandTiltDb(bar) < analyzer.bandTiltDb(bar - 1),
+      )
+    }
+
+    // 1kHz 附近应为 0 dB 参考点（不增不减）
+    val refBar = (0 until SpectrumAnalyzer.BAR_COUNT).minByOrNull { kotlin.math.abs(analyzer.bandCenterHz(it) - 1_000f) }!!
+    assertTrue("1kHz 附近不应有明显补偿，实际 ${analyzer.bandTiltDb(refBar)}", kotlin.math.abs(analyzer.bandTiltDb(refBar)) < 1f)
+  }
+
+  @Test
+  fun `默认不应启用倾斜补偿`() {
+    // 回归守卫：4.5dB/oct 会把 54Hz 抬高 +19dB，低频柱就常驻在画面 87% 处、
+    // 鼓点只能在上面叠出很小的涟漪 —— 实测确认后已把默认改成 0。
+    assertEquals(0f, SpectrumAnalyzer.DEFAULT_TILT_DB_PER_OCTAVE, 0f)
+    val analyzer = SpectrumAnalyzer(44_100, channelCount = 2)
+    for (bar in 0 until SpectrumAnalyzer.BAR_COUNT) {
+      assertEquals("柱 $bar 不应有倾斜补偿", 0f, analyzer.bandTiltDb(bar), 1e-4f)
+    }
+  }
+
+  @Test
+  fun `关闭倾斜后各频带恢复一致`() {
+    // 与上一条对照：tilt=0 时高低频的补偿都为 0
+    val analyzer = SpectrumAnalyzer(44_100, channelCount = 2, tiltDbPerOctave = 0f)
+    for (bar in 0 until SpectrumAnalyzer.BAR_COUNT) {
+      assertEquals(0f, analyzer.bandTiltDb(bar), 1e-4f)
+    }
+  }
+
+  @Test
+  fun `横向频率分布应压缩低频、展开高频`() {
+    val analyzer = SpectrumAnalyzer(44_100, channelCount = 2)
+    val barCount = SpectrumAnalyzer.BAR_COUNT
+
+    fun barOf(frequency: Float) =
+      (0 until barCount).minByOrNull { kotlin.math.abs(analyzer.bandCenterHz(it) - frequency) }!!
+
+    // 纯对数轴时 200Hz 会落在第 13 柱（27% 宽度）；弯曲后应明显更靠左
+    val bar200 = barOf(200f)
+    assertTrue("200Hz 应落在前 20% 内，实际柱 $bar200 / $barCount", bar200 < barCount * 0.2f)
+
+    // 1kHz 落在约 1/3 处
+    val bar1k = barOf(1_000f)
+    assertTrue("1kHz 应落在 30%~45% 之间，实际柱 $bar1k / $barCount", bar1k in (barCount * 0.30f).toInt()..(barCount * 0.45f).toInt())
+
+    // 最低柱必须仍然从 40Hz 附近开始（不能把低频丢掉了）
+    assertTrue("第一柱中心频率应接近 40Hz，实际 ${analyzer.bandCenterHz(0)}", analyzer.bandCenterHz(0) < 80f)
+    // 频带中心频率必须严格递增
+    for (bar in 1 until barCount) {
+      assertTrue(
+        "中心频率应递增：柱 ${bar - 1}=${analyzer.bandCenterHz(bar - 1)} vs 柱 $bar=${analyzer.bandCenterHz(bar)}",
+        analyzer.bandCenterHz(bar) > analyzer.bandCenterHz(bar - 1),
+      )
+    }
+  }
+
+  @Test
+  fun `宽带里的窄峰在噪声底上应当立起来`() {
+    val sampleRate = 44_100
+    // 关掉 tilt，否则频率相关的增益会干扰判断
+    val analyzer = SpectrumAnalyzer(sampleRate, channelCount = 2, tiltDbPerOctave = 0f)
+    val chunkFrames = sampleRate / 50
+    val toneFrequency = 8_000.0
+    val random = java.util.Random(7L)
+
+    var frame: AudioFrame? = null
+    var offset = 0
+    repeat(50) { index ->
+      val chunk = ShortArray(chunkFrames * 2)
+      for (i in 0 until chunkFrames) {
+        val n = i + offset
+        val tone = sin(2 * PI * toneFrequency * n / sampleRate) * 0.5
+        chunk[i * 2] = ((tone + (random.nextDouble() - 0.5) * 0.1) * 32767).toInt().toShort()
+        chunk[i * 2 + 1] = ((tone + (random.nextDouble() - 0.5) * 0.1) * 32767).toInt().toShort()
+      }
+      offset += chunkFrames
+      analyzer.process(chunk, chunk.size, index * 20L)?.let { frame = it }
+    }
+
+    val spectrum = requireNotNull(frame).spectrum
+    val toneBar = spectrum.indices
+      .minByOrNull { kotlin.math.abs(analyzer.bandCenterHz(it) - toneFrequency.toFloat()) }!!
+    val neighbourMax = listOf(toneBar - 2, toneBar - 1, toneBar + 1, toneBar + 2)
+      .filter { it in spectrum.indices }
+      .maxOf { spectrum[it] }
+
+    // 8kHz 附近的频带宽达几十个 bin。用「平均功率」聚合时这个窄音会被同带内的噪声稀释掉，
+    // 用「峰值」聚合它才能立起来 —— 这条断言就是为了盯住这个区别。
+    assertTrue(
+      "8kHz 窄峰应明显高过相邻柱，实际 峰=${spectrum[toneBar]} 邻柱最大=$neighbourMax",
+      spectrum[toneBar] - neighbourMax > 0.10f,
+    )
+  }
+
+  @Test
+  fun `24ms 内的重复调用不会重复产出帧`() {
+    val sampleRate = 44_100
+    val analyzer = SpectrumAnalyzer(sampleRate, channelCount = 2)
+    val chunkFrames = sampleRate / 50
+    val chunk = ShortArray(chunkFrames * 2)
+
+    val first = analyzer.process(chunk, chunk.size, 0L)
+    val second = analyzer.process(chunk, chunk.size, 10L)
+    val third = analyzer.process(chunk, chunk.size, 30L)
+
+    assertTrue("首帧应立即产出", first != null)
+    assertEquals("10ms 后不应再产出", null, second)
+    assertTrue("30ms 后应产出", third != null)
+  }
+}

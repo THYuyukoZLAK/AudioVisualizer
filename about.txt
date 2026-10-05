@@ -1,0 +1,25 @@
+Dev. by 西行寺夜和 / THYuyukoZLAK
+with assistance of Deepseek V4.1 flash & Github Copilot
+（在此放置一张图片，路径为F:\systemdefault\img\1\HAIlogo.png）
+
+--- 开源许可 ---
+
+本应用自身代码以 MIT License 发布，Copyright (c) 2026 THYuyukoZLAK。
+
+频谱分析与背景粒子两处实现，移植/改写自 LLin —— osu! 插件 IGPlayer，即「mfosu」：
+https://github.com/MATRIX-feather/LLin
+MIT License, Copyright (c) 2025 MATRIX-feather
+两者许可证相同（均为 MIT），无冲突；已完整保留其版权声明与许可声明。
+未使用该项目的任何美术资源、贴图或二进制文件。
+
+界面所用的 JetBrains Mono 字体为 SIL Open Font License 1.1
+（Copyright 2020 The JetBrains Mono Project Authors），打包的是未修改的副本。
+
+其余依赖（AndroidX / Jetpack Compose / Kotlin / kotlinx.coroutines）为 Apache License 2.0。
+
+完整许可证全文随包内置，见「设置 → 关于 → 查看许可证全文」；
+源码侧见 licenses/ 目录与 THIRD-PARTY-NOTICES.md。
+
+联系开发者：
+Email xiazihe051130@hotmail.com
+QQ 1161254733

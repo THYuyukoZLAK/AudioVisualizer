@@ -1,0 +1,26 @@
+================================================================
+【二】LLin（osu! 插件 IGPlayer，即「mfosu」）
+MIT License
+Copyright (c) 2025 MATRIX-feather
+https://github.com/MATRIX-feather/LLin
+================================================================
+
+本应用的「频谱分析」与「背景粒子」两处实现，是阅读并移植/改写该项目的
+下列源文件而成的（原项目为 C# + osu.Framework，本项目为 Kotlin + Jetpack Compose，
+非逐行翻译，但算法链路、参数含义与默认值均来自这些文件）：
+
+  Features/Player/Plugins/Bundle/SandboxToPanel/RulesetComponents/
+    Configuration/SandboxRulesetConfigManager.cs      频谱与粒子的默认参数
+    Screens/Visualizer/Components/Visualizers/MusicVisualizerDrawable.cs
+                                                      柱状频谱的取数/上升/衰减/平滑
+    Screens/Visualizer/Components/Particles.cs        粒子层的装配
+    Screens/Visualizer/Components/ParticlesDrawable.cs
+                                                      伪 3D 视差粒子的模拟与绘制
+    Screens/Visualizer/Components/MusicHelpers/
+      MusicAmplitudesProvider.cs                      每帧取频谱幅度
+      MusicIntensityController.cs                     Σ幅度 ＝ 音频强度
+      CurrentRateContainer.cs                         把音频强度绑定到时间流速
+      RateAdjustableContainer.cs                      被音频强度缩放的自有时钟
+
+未使用该项目的任何美术资源、字体、贴图与二进制文件。
+
