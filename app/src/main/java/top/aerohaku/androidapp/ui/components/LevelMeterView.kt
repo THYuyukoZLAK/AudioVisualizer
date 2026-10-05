@@ -43,8 +43,9 @@ import java.util.Locale
  *
  * ## 关于标尺（[showScale]）
  *
- * 这里画的 dB 刻度是**真 dB**（量程 `VizStyle.METER_FLOOR_DB`..0），和频谱图那边
- * 刻意用百分比不同 —— 电平表本来就是 dB 域的，标 dB 才有意义。
+ * 这里画的 dB 刻度是**真 dB**（量程 `VizStyle.METER_FLOOR_DB`..`METER_CEIL_DB`，
+ * 即 -60..+6），和频谱图那边刻意用百分比不同 —— 电平表本来就是 dB 域的，标 dB 才有意义。
+ * 上端那 6dB 是留给过载的余量，见 [VizStyle.METER_CEIL_DB] 的说明。
  * 默认关闭：版式稿要求「无边框、无背景」，标尺本身也是线条。
  */
 @Composable
@@ -178,8 +179,14 @@ private fun MeterRow(
 private fun formatDb(db: Float): String =
   if (db <= VizStyle.METER_FLOOR_DB + 0.05f) "-∞" else String.format(Locale.US, "%.1f", db)
 
-/** 标尺刻度：12dB 一档。两端（0 / -60）不标 —— 那是轨道边界，标了只会挤 */
-private val METER_TICKS_DB = listOf(-48, -36, -24, -12)
+/**
+ * 标尺刻度：12dB 一档，**终点是 0 dB**。
+ *
+ * 0 以前不标是因为拿它当轨道右边界（贴着边缘只会挤）；现在上端有 +6dB 的余量，
+ * 0 dB 正好是「过载与否」的分界，标出来才知道柱子越过去了多少。
+ * 下端的 -60 仍不标：那是量程起点，会和柱子起点重合。
+ */
+private val METER_TICKS_DB = listOf(-48, -36, -24, -12, 0)
 
 private const val SCALE_LINE_ALPHA = 0.25f
 private const val SCALE_LINE_WIDTH = 1f

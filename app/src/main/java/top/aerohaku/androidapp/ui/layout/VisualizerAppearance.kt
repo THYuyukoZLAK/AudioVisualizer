@@ -27,12 +27,20 @@ data class VisualizerAppearance(
    */
   val autoScale: Boolean = true,
   /**
-   * 频谱图 / 电平表是否显示标尺与数值。
+   * 频谱图是否显示标尺与数值（**相对满度的百分比**）。
    *
    * 默认**关**：版式稿要求「无边框、无背景」，标尺本身也是线条，
    * 开着会破坏那种干净的观感；但需要读数时又确实有用，所以做成可选。
    */
-  val showScales: Boolean = false,
+  val showSpectrumScale: Boolean = false,
+  /**
+   * 电平表是否显示 dB 刻度与数值。
+   *
+   * 与 [showSpectrumScale] **分开配置**：两者一个标相对百分比、一个标真 dB，
+   * 看着同一个界面却是两套量纲；用途也不同 —— 频谱看相对起伏，电平看有没有过载。
+   * 绑在一个开关上没道理。
+   */
+  val showLevelScale: Boolean = false,
 )
 
 /**
@@ -67,7 +75,15 @@ object VisualizerAppearanceStore {
           LyricsAlign.valueOf(prefs.getString(KEY_LYRICS_ALIGN, null) ?: LyricsAlign.START.name)
         }.getOrDefault(LyricsAlign.START),
         autoScale = prefs.getBoolean(KEY_AUTO_SCALE, true),
-        showScales = prefs.getBoolean(KEY_SCALES, false),
+        // 这两个开关早先是共用同一个键的，老装机上没有新键时沿用旧值
+        showSpectrumScale = prefs.getBoolean(
+          KEY_SPECTRUM_SCALE,
+          prefs.getBoolean(KEY_SCALES_LEGACY, false),
+        ),
+        showLevelScale = prefs.getBoolean(
+          KEY_LEVEL_SCALE,
+          prefs.getBoolean(KEY_SCALES_LEGACY, false),
+        ),
       )
       loaded = true
     }
@@ -93,8 +109,13 @@ object VisualizerAppearanceStore {
     persist(context)
   }
 
-  fun setShowScales(context: Context, enabled: Boolean) {
-    _state.value = _state.value.copy(showScales = enabled)
+  fun setShowSpectrumScale(context: Context, enabled: Boolean) {
+    _state.value = _state.value.copy(showSpectrumScale = enabled)
+    persist(context)
+  }
+
+  fun setShowLevelScale(context: Context, enabled: Boolean) {
+    _state.value = _state.value.copy(showLevelScale = enabled)
     persist(context)
   }
 
@@ -110,7 +131,9 @@ object VisualizerAppearanceStore {
       putBoolean(KEY_BORDER, _state.value.albumArtBorder)
       putString(KEY_LYRICS_ALIGN, _state.value.lyricsAlign.name)
       putBoolean(KEY_AUTO_SCALE, _state.value.autoScale)
-      putBoolean(KEY_SCALES, _state.value.showScales)
+      putBoolean(KEY_SPECTRUM_SCALE, _state.value.showSpectrumScale)
+      putBoolean(KEY_LEVEL_SCALE, _state.value.showLevelScale)
+      remove(KEY_SCALES_LEGACY)
     }.apply()
   }
 
@@ -118,7 +141,11 @@ object VisualizerAppearanceStore {
   private const val KEY_BORDER = "albumArtBorder"
   private const val KEY_LYRICS_ALIGN = "lyricsAlign"
   private const val KEY_AUTO_SCALE = "autoScale"
-  private const val KEY_SCALES = "showScales"
+  private const val KEY_SPECTRUM_SCALE = "showSpectrumScale"
+  private const val KEY_LEVEL_SCALE = "showLevelScale"
+
+  /** 已废弃：两个开关早先共用一个键，读完一次就删 */
+  private const val KEY_SCALES_LEGACY = "showScales"
 
   /** 供 UI 显示：暗化强度 → 百分比文本 */
   fun formatDarken(value: Float): String = "${(value * 100).toInt()}%"

@@ -4,6 +4,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.sp
+import top.aerohaku.androidapp.dsp.Levels
 
 /**
  * 可视化页面的统一风格约定（见用户给的版式稿）。
@@ -25,11 +26,16 @@ object VizStyle {
 
   /**
    * 左右声道电平表的显示范围。
-   * 用 60dB 而不是 [top.aerohaku.androidapp.dsp.Levels.MIN_DB] 的 75dB ——
+   * 用 60dB 而不是 [Levels.MIN_DB] 的 75dB ——
    * 音乐电平基本落在 -60..0 之间，60dB 量程下分辨率更高、更好读。
+   *
+   * 上端**刻意越过 0 dB**：数据层的 dB 允许到 `MAX_DB + HEADROOM_DB`（见 [Levels]），
+   * 以前这里取 0 再用 `coerceIn` 压住，结果过载的部分全糊在右边缘 ——
+   * 看起来就是「柱子老顶着最右边、看不出谁更响」。
+   * 留出这段余量之后，0 dB 才成为一个有意义的刻度。
    */
   const val METER_FLOOR_DB = -60f
-  const val METER_CEIL_DB = 0f
+  const val METER_CEIL_DB = Levels.MAX_DB + Levels.HEADROOM_DB
 
   /** dB → 0..1（电平表用） */
   fun meterFraction(db: Float): Float =

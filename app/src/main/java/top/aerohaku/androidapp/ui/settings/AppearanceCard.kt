@@ -72,16 +72,20 @@ fun AppearanceCard(modifier: Modifier = Modifier) {
     }
 
     Row(verticalAlignment = Alignment.CenterVertically) {
-      LabeledValue("频谱 / 电平标尺与数值", modifier = Modifier.weight(1f))
+      LabeledValue("频谱标尺与数值", modifier = Modifier.weight(1f))
       ScexSwitch(
-        checked = appearance.showScales,
-        onCheckedChange = { VisualizerAppearanceStore.setShowScales(context, it) },
+        checked = appearance.showSpectrumScale,
+        onCheckedChange = { VisualizerAppearanceStore.setShowSpectrumScale(context, it) },
       )
     }
-    Hint(
-      "频谱的标尺是「相对满度的百分比」—— 它的纵轴是线性幅度，标 dB 会误导；" +
-        "电平表那边才是真 dB 刻度。",
-    )
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+      LabeledValue("电平标尺与数值", modifier = Modifier.weight(1f))
+      ScexSwitch(
+        checked = appearance.showLevelScale,
+        onCheckedChange = { VisualizerAppearanceStore.setShowLevelScale(context, it) },
+      )
+    }
 
     Row(verticalAlignment = Alignment.CenterVertically) {
       LabeledValue("小屏自动缩放", modifier = Modifier.weight(1f))

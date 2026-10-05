@@ -30,7 +30,8 @@ import top.aerohaku.androidapp.dsp.SpectrumAnalyzer
  * 刻度用**相对满度的百分比**，**刻意不画 dB 刻度** —— 频谱的纵轴是线性幅度
  * （mfosu 的模型就是这样，见 `SpectrumAnalyzer.DEFAULT_DISPLAY_GAIN`），
  * 在线性轴上标 dB 会让人误以为纵轴是对数的，属于误导。
- * 需要 dB 读数的地方是电平表，那边才是真 dB（`VizStyle.METER_FLOOR_DB`..0）。
+ * 需要 dB 读数的地方是电平表，那边才是真 dB
+ * （`VizStyle.METER_FLOOR_DB`..`METER_CEIL_DB`，即 -60..+6）。
  *
  * 默认关闭：版式稿要求「无边框、无背景」，标尺本身也是线条。
  *

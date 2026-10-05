@@ -315,12 +315,12 @@ fun VisualizerScreen(
 
                   VisualizerWidget.SPECTRUM -> SpectrumView(
                     frames = viewModel.audioFrame,
-                    showScale = appearance.showScales,
+                    showScale = appearance.showSpectrumScale,
                   )
 
                   VisualizerWidget.LEVEL_METERS -> LevelMeterView(
                     frames = viewModel.audioFrame,
-                    showScale = appearance.showScales,
+                    showScale = appearance.showLevelScale,
                   )
 
                   VisualizerWidget.WAVEFORM -> WaveformView(viewModel.audioFrame)
