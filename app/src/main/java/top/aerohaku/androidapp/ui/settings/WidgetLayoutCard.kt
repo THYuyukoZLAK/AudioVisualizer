@@ -32,57 +32,11 @@ import top.aerohaku.androidapp.theme.ScexGhostButton
 import top.aerohaku.androidapp.theme.ScexSlider
 import top.aerohaku.androidapp.theme.ScexSwitch
 import top.aerohaku.androidapp.ui.layout.AnchorPoint
-import top.aerohaku.androidapp.ui.layout.LayoutPreset
 import top.aerohaku.androidapp.ui.layout.VisualizerLayoutStore
 import top.aerohaku.androidapp.ui.layout.VisualizerWidget
 import top.aerohaku.androidapp.ui.layout.WidgetConfig
 import top.aerohaku.androidapp.ui.layout.describe
 import top.aerohaku.androidapp.ui.layout.placement
-
-/** 版式预设切换 —— 一键在「歌词在右上」与「歌词在封面下方」之间切换 */
-@Composable
-fun PresetCard(modifier: Modifier = Modifier) {
-  val context = LocalContext.current
-  VisualizerLayoutStore.ensureLoaded(context)
-  val preset by VisualizerLayoutStore.preset.collectAsStateWithLifecycle()
-  val configs by VisualizerLayoutStore.configs.collectAsStateWithLifecycle()
-
-  ScexCard(title = "版式预设", modifier = modifier) {
-    LayoutPreset.entries.forEach { option ->
-      PresetRow(
-        preset = option,
-        selected = option == preset && configs == option.configs,
-        onClick = { VisualizerLayoutStore.applyPreset(context, option) },
-      )
-    }
-    // 手动拖过任何一个部件之后，预设名就名不副实了 —— 直接说出来，
-    // 而不是继续显示一个已经不准的选中态
-    if (configs != preset.configs) {
-      Hint("当前布局已被手动调整过，与「${preset.label}」不再一致。点上面任意预设可复位。")
-    }
-  }
-}
-
-@Composable
-private fun PresetRow(preset: LayoutPreset, selected: Boolean, onClick: () -> Unit) {
-  Column(
-    Modifier
-      .fillMaxWidth()
-      .border(1.dp, if (selected) ScexColors.AccentForm else ScexColors.Border)
-      .background(if (selected) ScexColors.AccentForm.copy(alpha = 0.15f) else ScexColors.Background)
-      .clickable(onClick = onClick)
-      .padding(horizontal = 14.dp, vertical = 10.dp),
-    verticalArrangement = Arrangement.spacedBy(2.dp),
-  ) {
-    Text(
-      text = if (selected) "▸ ${preset.label}" else preset.label,
-      color = if (selected) ScexColors.Heading else ScexColors.Body,
-      style = MaterialTheme.typography.bodyMedium,
-      fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-    )
-    Hint(preset.description)
-  }
-}
 
 /**
  * 部件布局编辑器。
