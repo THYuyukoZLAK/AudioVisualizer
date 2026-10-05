@@ -53,9 +53,11 @@ import java.util.Locale
  *
  * ## 削顶红线
  *
- * 准峰值顶到满量程时，在 0 dB 位置亮一条红线（`VizStyle.ClipColor`）——
+ * 准峰值越过 `Levels.isClipping` 的阈值时，在 0 dB 位置亮一条红线（`VizStyle.ClipColor`）——
  * 它是整个界面**唯一**的非黑白颜色。带 [CLIP_HOLD_MS] 的保持时间，
  * 否则准峰值在阈值附近抖动时红线会闪。
+ *
+ * ⚠️ 判的是**准峰值**而不是瞬时峰值，阈值也因此取 -3dB 而非 0dB（理由见 `Levels.isClipping`）。
  */
 @Composable
 fun LevelMeterView(
@@ -101,8 +103,9 @@ private fun MeterRow(
     }
   }
 
-  // 削顶指示：准峰值顶到满量程（见 Levels.isClipping）时，在 0 dB 位置亮红线。
-  // 带一点保持时间 —— 准峰值会在阈值附近抖，不保持的话红线会闪。
+  // 削顶指示：准峰值越过 Levels.isClipping 的阈值时，在 0 dB 位置亮红线。
+  // 注意判的是准峰值（3ms RMS 最大值），不是瞬时峰值 —— 阈值也因此取 -3dB 而非 0dB。
+  // 带一点保持时间：准峰值会在阈值附近抖，不保持的话红线会闪。
   val now = SystemClock.elapsedRealtime()
   var clipUntil by remember { mutableLongStateOf(0L) }
   if (Levels.isClipping(peakDb)) clipUntil = now + CLIP_HOLD_MS

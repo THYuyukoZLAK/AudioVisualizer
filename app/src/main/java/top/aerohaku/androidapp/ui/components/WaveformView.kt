@@ -15,11 +15,14 @@ import kotlinx.coroutines.flow.StateFlow
 import top.aerohaku.androidapp.dsp.AudioFrame
 
 /**
- * 波形图 —— 上下两条白线标明边界，中间一条白色折线。
+ * 波形图 —— 上下两条半透明边界线标明幅度范围，中间一条白色折线。
  *
  * 版式稿要求「除波形图上下有两条白线标明边界外，没有边框」。所以：
  * 原来那条**中轴线已去掉**（它会和数据线混在一起），改为上下两条边界线来界定幅度范围。
  * 折线上限被压到边界线内侧，波形不会压住边界。
+ *
+ * ⚠️ 边界线是**半透明**的（[BOUNDARY_ALPHA]）：它们只是「量程提示」、不是数据。
+ * 整条横跨画布、又和折线一样实的白，看起来会比波形本身还抢眼。
  *
  * ⚠️ 自己订阅 [frames]，避免每帧把整页拖进重组。
  */
@@ -34,9 +37,10 @@ fun WaveformView(
   Canvas(modifier.fillMaxSize()) {
     val lineWidth = VizStyle.LINE_DP.dp.toPx()
 
-    // 上下边界白线
-    drawRect(VizStyle.Fill, Offset.Zero, Size(size.width, lineWidth))
-    drawRect(VizStyle.Fill, Offset(0f, size.height - lineWidth), Size(size.width, lineWidth))
+    // 上下边界线：半透明，它们是量程提示而不是数据
+    val boundary = VizStyle.Fill.copy(alpha = BOUNDARY_ALPHA)
+    drawRect(boundary, Offset.Zero, Size(size.width, lineWidth))
+    drawRect(boundary, Offset(0f, size.height - lineWidth), Size(size.width, lineWidth))
 
     if (waveform.size < 2) return@Canvas
 
@@ -55,3 +59,11 @@ fun WaveformView(
     drawPath(path = path, color = VizStyle.Fill, style = Stroke(width = lineWidth))
   }
 }
+
+/**
+ * 上下边界线的透明度。
+ *
+ * 比频谱/电平的刻度线（0.22~0.25）实一点 —— 它们界定了量程，要看得清；
+ * 但明显弱于波形折线（不透明），否则整条横跨画布的边框会抢掉数据的注意力。
+ */
+private const val BOUNDARY_ALPHA = 0.35f

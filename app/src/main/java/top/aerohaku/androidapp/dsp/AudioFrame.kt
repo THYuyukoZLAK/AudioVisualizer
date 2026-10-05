@@ -54,8 +54,21 @@ object Levels {
     return dbNormalized * (1f - linearMix) + linearNormalized * linearMix
   }
 
-  /** 峰值是否接近削顶（用于亮削顶指示灯） */
-  fun isClipping(peakDb: Float): Boolean = peakDb >= -0.5f
+  /**
+   * 准峰值是否已经顶到极限（用于亮电平表的削顶红线）。
+   *
+   * ⚠️ 阈值取 **-3 dB 而不是 0 dB** —— 这里踩过一次坑：
+   * 电平表的「峰值」现在（2026-10-06 起）是**准峰值** = 3ms 子窗 RMS 的最大值，
+   * 它天然比瞬时峰值低 3dB 以上。
+   *
+   * 算一下就知道 0dB 阈值永远不可能触发：
+   * - 满幅**正弦**（幅度 1.0）的 3ms RMS = 1/√2 → **-3.01 dB**
+   * - 只有当波形被压成接近**方波**（严重压限或真削顶）时，RMS 才会接近 0 dB
+   *
+   * 所以拿瞬时峰值的习惯（`>= -0.5f`）来判准峰值，红线一辈子不会亮。
+   * 取 -3dB 即「某个 3ms 窗口的能量已经达到满幅正弦的水平」—— 这是「顶到极限」的合理分界。
+   */
+  fun isClipping(quasiPeakDb: Float): Boolean = quasiPeakDb >= -3f
 }
 
 /**
