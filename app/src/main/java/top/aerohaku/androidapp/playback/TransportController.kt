@@ -3,6 +3,7 @@ package top.aerohaku.androidapp.playback
 import android.media.session.MediaController
 import android.media.session.PlaybackState
 import android.os.Build
+import android.os.SystemClock
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -128,7 +129,46 @@ object TransportController {
     runCatching { controller?.transportControls?.skipToNext() }
   }
 
+  /**
+   * 跳到指定进度。
+   *
+   * 网易云**自己声明**了 `SEEK_TO`（`actions = 0x336`，逐位解出来是
+   * PLAY / PAUSE / PLAY_PAUSE / SKIP_NEXT / SKIP_PREV / **SEEK**），
+   * 所以走标准的 `TransportControls.seekTo()` 就行，不需要任何私有接口。
+   *
+   * ⚠️ 它是**异步**的：调用只负责把 seek 派发过去，新位置要等会话把新的
+   * `PlaybackState` 推回来。所以这里顺手记一笔 [pendingSeek]，
+   * 让 [PositionEstimator] 在这个窗口内先用目标位置 —— 否则进度条会先**回弹**到旧位置。
+   */
+  fun seekTo(positionMs: Long) {
+    val target = positionMs.coerceAtLeast(0L)
+    runCatching { controller?.transportControls?.seekTo(target) }
+    pendingSeekTarget = target
+    pendingSeekAt = SystemClock.elapsedRealtime()
+  }
+
+  private var pendingSeekTarget: Long? = null
+  private var pendingSeekAt = 0L
+
+  /**
+   * 刚刚发出、会话还没回报的 seek。没人接就返回 null。
+   *
+   * 窗口取 [PENDING_SEEK_WINDOW_MS]：足够盖住网易云的回报延迟，
+   * 又不会长到把「seek 实际没生效」长期掩盖掉。
+   */
+  internal fun pendingSeek(nowMs: Long): PendingSeek? {
+    val target = pendingSeekTarget ?: return null
+    if (nowMs - pendingSeekAt > PENDING_SEEK_WINDOW_MS) return null
+    return PendingSeek(positionMs = target, atElapsedMs = pendingSeekAt)
+  }
+
   fun jumpTo(queueId: Long) {
     runCatching { controller?.transportControls?.skipToQueueItem(queueId) }
   }
+
+  /** seek 发出后的「本地预期」有效期，见 [pendingSeek] */
+  private const val PENDING_SEEK_WINDOW_MS = 2000L
 }
+
+/** [TransportController.pendingSeek] 的返回值：目标位置 + 发出时刻（`elapsedRealtime`） */
+data class PendingSeek(val positionMs: Long, val atElapsedMs: Long)

@@ -271,12 +271,26 @@ fun SettingsScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
           )
           Spacer(Modifier.width(10.dp))
           Text(
-            text = if (screenSettings.keepScreenOn) "使用期间保持屏幕常亮" else "跟随系统煈屏时间",
+            text = if (screenSettings.keepScreenOn) "使用期间保持屏幕常亮" else "跟随系统熄屏时间",
             color = ScexColors.Body,
             style = MaterialTheme.typography.bodyMedium,
           )
         }
-        Hint("开着可视化却让屏幕自己煈掉没意义。关掉后按系统设定的煈屏时间来。")
+        Hint("开着可视化却让屏幕自己熄掉没意义。关掉后按系统设定的熄屏时间来。")
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          ScexSwitch(
+            checked = screenSettings.hideSystemBars,
+            onCheckedChange = { ScreenSettingsStore.setHideSystemBars(context, it) },
+          )
+          Spacer(Modifier.width(10.dp))
+          Text(
+            text = "隐藏状态栏与任务栏（全屏）",
+            color = ScexColors.Body,
+            style = MaterialTheme.typography.bodyMedium,
+          )
+        }
+        Hint("平板那条常驻任务栏属于系统栏，会一起收掉。系统栏并没有被禁用 —— 从屏幕边缘往上滑会临时唤出。")
       }
 
       if (selectedTab == SettingsTab.PLAYBACK) ScexCard(title = "播放控制") {

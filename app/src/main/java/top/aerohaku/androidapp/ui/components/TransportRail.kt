@@ -41,7 +41,6 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -59,6 +58,42 @@ import top.aerohaku.androidapp.playback.TransportSettings
 import top.aerohaku.androidapp.playback.TransportSettingsStore
 import top.aerohaku.androidapp.theme.JetBrainsMono
 import top.aerohaku.androidapp.theme.ScexColors
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+
+/**
+ * 「屏幕上有人碰过」的心跳。
+ *
+ * 只服务于播放控制栏的自动隐藏：它自己记不住「用户上一次碰屏幕是什么时候」，
+ * 而那个事件可能被它上面的浮层（设置页、对话框）吃掉。
+ *
+ * ## ‼️ 为什么不能把监听器挂在控制栏自己身上
+ *
+ * 曾经的做法是给控制栏的根 Box 加上 `fillMaxSize() + pointerInput { ... }`：
+ * 铺满整页、只旁听不 consume，看起来「不挡任何人」。
+ *
+ * **这是错的。** Compose 的命中测试在遍历兄弟节点时，**一旦某个兄弟收到了指针输入
+ * 就停下**（不再往下层的兄弟走）—— 「没 consume」只影响同一个事件流里的**已经命中的**
+ * 节点，根本轮不到没命中的那些。控制栏在部件层**之上**，
+ * 于是它那个「只是旁听」的监听器把整个部件层的触摸全吃掉了：
+ * 表现就是**顶部进度条拖不动也点不动**（真机实测：`ViewRootImpl` 确实把
+ * `ACTION_DOWN/UP` 投递给了窗口，但进度条上的探针一个事件都没收到）。
+ *
+ * 挂到**祖先**节点（屏幕根 Box）上就没这个问题：祖先本来就在每一条命中路径上，
+ * 只旁听、不参与「谁挡谁」，谁都挡不住。
+ */
+object TransportInteraction {
+
+  private val _lastMs = MutableStateFlow(SystemClock.elapsedRealtime())
+
+  /** 上次有人碰屏幕的时刻（`SystemClock.elapsedRealtime()`） */
+  val lastMs: StateFlow<Long> = _lastMs.asStateFlow()
+
+  fun note() {
+    _lastMs.value = SystemClock.elapsedRealtime()
+  }
+}
 
 /**
  * 右侧播放控制栏：**播放列表 / 上一首 / 播放·暂停 / 下一首**，自上到下。
@@ -85,6 +120,9 @@ import top.aerohaku.androidapp.theme.ScexColors
  *
  * 页面上超过 [TransportSettings.autoHideSeconds] 秒没人碰，就把控制栏淡出去；
  * 之后任何一次触摸都会让它回来。时长在设置页可改，拖到 0 就是不自动隐藏。
+ *
+ * ‼️ 「有人在用」这件事由屏幕**根**节点上的监听器转达（见 [TransportInteraction]）——
+ * 控制栏自己不能为了旁听触摸而铺满整页，那会把下面整个部件层的触摸都吃掉。
  */
 @Composable
 fun TransportRail(modifier: Modifier = Modifier) {
@@ -98,15 +136,21 @@ fun TransportRail(modifier: Modifier = Modifier) {
 
   var showQueue by remember { mutableStateOf(false) }
   var railVisible by remember { mutableStateOf(true) }
-  var lastInteraction by remember { mutableStateOf(SystemClock.elapsedRealtime()) }
 
   val autoHideMs = settings.autoHideSeconds * 1_000L
+
+  // 有人在用（心跳由屏幕根部的监听器发，见 TransportInteraction）
+  val lastInteraction by TransportInteraction.lastMs.collectAsStateWithLifecycle()
+  LaunchedEffect(lastInteraction) {
+    // 任何一次触摸都让它立刻回来，并重新开始计时
+    railVisible = true
+  }
 
   // 看门狗：隔一会儿检查一次「上次有人碰屏幕是多久前」
   LaunchedEffect(autoHideMs, showQueue) {
     while (true) {
       delay(IDLE_CHECK_INTERVAL_MS)
-      val idle = SystemClock.elapsedRealtime() - lastInteraction
+      val idle = SystemClock.elapsedRealtime() - TransportInteraction.lastMs.value
       // 列表开着的时候不隐藏 —— 那会把用户正在看的东西抽走
       if (autoHideMs > 0L && !showQueue && idle >= autoHideMs) railVisible = false
     }
@@ -117,21 +161,11 @@ fun TransportRail(modifier: Modifier = Modifier) {
 
   Box(
     modifier
-      .fillMaxSize()
-      // 旁听整页的触摸：pointerInput 不 consume，所以下面那些部件的点击照常生效，
-      // 这里只是知道「有人在用」。
-      //
-      // ⚠️ 用 PointerEventPass.Initial 是要在子节点之前拿到事件；
-      // **一定不能调 consume()**，否则右下角齿轮和所有部件都点不动了。
-      .pointerInput(Unit) {
-        awaitPointerEventScope {
-          while (true) {
-            awaitPointerEvent(PointerEventPass.Initial)
-            lastInteraction = SystemClock.elapsedRealtime()
-            railVisible = true
-          }
-        }
-      },
+      .fillMaxSize(),
+    // ‼️ 这个 Box 是 `fillMaxSize()`（子节点要靠 CenterEnd 对齐），
+    //    但**绝对不能再挂 pointerInput**：它坐在部件层之上，一旦挂了手势，
+    //    Compose 的命中就会停在这里，下面整个部件层（包括顶部进度条）都收不到触摸。
+    //    「旁听触摸」已经挑到屏幕根节点上了，见 TransportInteraction。
   ) {
     AnimatedVisibility(
       visible = railVisible,

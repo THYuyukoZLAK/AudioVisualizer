@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
+import android.media.session.PlaybackState
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -47,6 +48,8 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -69,15 +72,18 @@ import top.aerohaku.androidapp.capture.AudioCaptureService
 import top.aerohaku.androidapp.capture.AudioSource
 import top.aerohaku.androidapp.capture.AudioSourceSettingsStore
 import top.aerohaku.androidapp.capture.CaptureController
+import top.aerohaku.androidapp.display.ScreenSettingsStore
 import top.aerohaku.androidapp.lyrics.LyricsState
 import top.aerohaku.androidapp.model.NowPlaying
 import top.aerohaku.androidapp.model.TargetApp
 import top.aerohaku.androidapp.permission.Permissions
 import top.aerohaku.androidapp.permission.ProjectionDisclosureStore
+import top.aerohaku.androidapp.playback.TransportController
 import top.aerohaku.androidapp.playback.MetadataSettingsStore
 import top.aerohaku.androidapp.ui.components.AlbumArtBackground
 import top.aerohaku.androidapp.ui.components.GearIcon
 import top.aerohaku.androidapp.ui.components.TransportRail
+import top.aerohaku.androidapp.ui.components.TransportInteraction
 import top.aerohaku.androidapp.ui.settings.ProjectionDisclosureDialog
 import top.aerohaku.androidapp.ui.settings.SettingsScreen
 import top.aerohaku.androidapp.ui.settings.SliderHud
@@ -264,6 +270,18 @@ fun VisualizerScreen(
   ParticleSettingsStore.ensureLoaded(context)
   val particles by ParticleSettingsStore.state.collectAsStateWithLifecycle()
 
+  // 屏幕行为（全屏）。部件层要不要避让系统栏由它决定，见下面部件层的注释。
+  //
+  // ‼️ `WindowInsets.systemBars` 是 `@Composable @ReadOnlyComposable` 的属性，
+  //    只能在 composable 上下文里读 —— 放到 `remember { }` 的计算块里会直接编译不过。
+  //    所以在这里先把结果算好，部件层只用一个普通值。
+  val screenSettings by ScreenSettingsStore.state.collectAsStateWithLifecycle()
+  val widgetInsets = if (screenSettings.hideSystemBars) {
+    WindowInsets(0.dp, 0.dp, 0.dp, 0.dp)
+  } else {
+    WindowInsets.systemBars
+  }
+
   // 粒子层每帧都要读一次最新能量，走 StateFlow 会让每个音频帧都触发重组，
   // 所以转存到一个普通对象里（见 ParticleEnergySource 的注释）。
   val particleEnergy = remember { ParticleEnergySource() }
@@ -275,6 +293,25 @@ fun VisualizerScreen(
 
   val lyricsLines = (lyricsState as? LyricsState.Ready)?.lines.orEmpty()
   val currentLine = lyricsLines.getOrNull(lyricUi.currentIndex)
+
+  // 顶部进度条能不能拖，取决于网易云有没有声明 SEEK。
+  // 真机实测 `actions = 0x336`，逐位解出来包含 `SEEK_TO`；没声明的话就传 null，
+  // 让组件保持「纯展示」——比做成可拖但拖了没反应要好。
+  //
+  // ‼️ `actions == 0L` 时**按支持处理**：会话刚连上、状态还没推过来时它就是 0，
+  // 那只是「还不知道」，不是「不支持」。按不支持处理会让进度条静默地不可交互 ——
+  // 用户只会觉得「拖不动」，而不会知道为什么。
+  val supportedActions by TransportController.supportedActions.collectAsStateWithLifecycle()
+  val transportReady by TransportController.available.collectAsStateWithLifecycle()
+  val seekAction: ((Long) -> Unit)? = remember(supportedActions, transportReady) {
+    if (!transportReady) {
+      null
+    } else if (supportedActions == 0L || supportedActions and PlaybackState.ACTION_SEEK_TO != 0L) {
+      { positionMs -> TransportController.seekTo(positionMs) }
+    } else {
+      null
+    }
+  }
 
   // NowPlaying.artwork 是 android.graphics.Bitmap（直接来自 MediaMetadata），展示前转一次
   val artwork: ImageBitmap? = remember(nowPlaying?.artwork) { nowPlaying?.artwork?.asImageBitmap() }
@@ -290,11 +327,34 @@ fun VisualizerScreen(
     capturePhase = captureStatus.phase,
   )
 
-  Box(modifier.fillMaxSize()) {
+  Box(
+    modifier
+      .fillMaxSize()
+      // 旁听整页的触摸：唯一用途是给播放控制栏记「有人在用」的心跳。
+      //
+      // ‼️ 必须挂在**根** Box（一切东西的祖先）上。以前是挂在控制栏自己那个
+      //    `fillMaxSize()` 的 Box 上，而控制栏在部件层**之上** ——
+      //    Compose 的命中测试遇到**第一个收到指针输入的兄弟就停下**，
+      //    所以那个「只旁听、不 consume」的监听器把整个部件层的触摸全吃掉了：
+      //    表现就是**顶部进度条拖不动也点不动**。
+      //    挂在祖先上则只旁听、不参与「谁挡谁」，谁都不挡。
+      //
+      // 用 Initial 这个 pass：祖先在 Main pass 里是最后才拿到的，
+      // 而这里只是想记个时间，不应该被子节点 consume 与否影响。
+      .pointerInput(Unit) {
+        awaitPointerEventScope {
+          while (true) {
+            awaitPointerEvent(PointerEventPass.Initial)
+            TransportInteraction.note()
+          }
+        }
+      },
+  ) {
     // 1) 背景
     AlbumArtBackground(
       artwork = artwork,
       darken = appearance.backgroundDarken,
+      blur = appearance.backgroundBlur,
       modifier = Modifier.fillMaxSize(),
     )
 
@@ -316,13 +376,27 @@ fun VisualizerScreen(
     BoxWithConstraints(
       Modifier
         .fillMaxSize()
-        // 只避让**系统栏**（状态栏 / 导航栏），**不避让屏幕挖孔**。
+        // 避让策略：**全屏（隐藏状态栏与任务栏）开着的时候就一点都不避让**，
+        // 关掉则回到原来的「只避让系统栏」。
         //
-        // 之前用的是 safeDrawingPadding()，它 = systemBars ∪ displayCutout ∪ ime。
-        // 横屏时挖孔通常落在屏幕左侧，于是「横跨整个屏幕」的进度条左边会空出一截。
+        // ‼️ 为什么不能直接写 windowInsetsPadding(WindowInsets.systemBars)：
+        //    `WindowInsets.systemBars` = statusBars ∪ navigationBars ∪ **captionBar**，
+        //    而本机（联想 TB321FU / ZUI）的**任务栏是以 captionBar 上报的** ——
+        //    `dumpsys window displays` 里是
+        //    `InsetsSource type=captionBar frame=[0,0][2560,60] visible=true`，
+        //    高度 60px。即便 immersive 已经把系统栏收掉、顶端一个像素都没画，
+        //    这个 insets 依然照报，于是版式白留 60px ——
+        //    实测就是「进度条被顶到 y=60 才出现」。
+        //    把「不避让」与设置绑定：开了就彻底用满全屏，关了恢复原样。
+        //
+        // 只避让**系统栏**、**不避让屏幕挖孔**：之前用的是 safeDrawingPadding()，
+        // 它 = systemBars ∪ displayCutout ∪ ime。横屏时挖孔通常落在屏幕左侧，
+        // 于是「横跨整个屏幕」的进度条左边会空出一截。
         // 本版式的左右边距最小也有 64dp，大于常见挖孔的宽度，本来就不会被遮住，
         // 所以避让挖孔只亏不赚。（开发机上没有挖孔，这里改与不改一模一样。）
-        .windowInsetsPadding(WindowInsets.systemBars),
+        //
+        // 具体值（`widgetInsets`）在上面算好了。
+        .windowInsetsPadding(widgetInsets),
     ) {
       val naturalDensity = LocalDensity.current
       val layoutDensity = if (appearance.autoScale) {
@@ -362,6 +436,8 @@ fun VisualizerScreen(
                       durationMs = nowPlaying?.durationMs ?: 0L,
                       modifier = Modifier.fillMaxSize(),
                       color = widgetColor,
+                      // 网易云没声明 SEEK 就不做成可交互的（拖了没反应更让人困惑）
+                      onSeek = seekAction,
                     )
 
                   VisualizerWidget.ALBUM_ART ->
@@ -404,8 +480,10 @@ fun VisualizerScreen(
       // 4) 右侧播放控制栏：播放列表 / 上一首 / 播放·暂停 / 下一首，自上到下。
       //    数据全部来自网易云对外开放的 MediaBrowserService（见 TransportRail 的注释）。
       //
-      //    ⚠️ 它自己铺满整页 —— 为了旁听「整页任何一次触摸」来实现超时自动隐藏。
-      //    里面的 pointerInput 不 consume 事件，所以不会挡住下面的部件和设置按钮。
+      //    ⚠️ 它铺满整页是为了让子节点能 CenterEnd 对齐，**但它一个手势都不能挂** ——
+      //    它坐在部件层之上，挂了手势就会把下面整个部件层的触摸全吃掉
+      //    （进度条拖不动就是这么来的）。自动隐藏要的「有人在用」心跳
+      //    改由上面根 Box 上的监听器发，见 TransportInteraction。
       TransportRail()
 
       // 4b) 右下角设置按钮（固定位置，不参与锚点配置，保证任何布局下都进得去）

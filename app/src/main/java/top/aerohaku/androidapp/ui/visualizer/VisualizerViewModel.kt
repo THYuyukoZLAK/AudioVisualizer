@@ -19,6 +19,7 @@ import top.aerohaku.androidapp.lyrics.LyricsRepository
 import top.aerohaku.androidapp.lyrics.LyricsState
 import top.aerohaku.androidapp.playback.NowPlayingState
 import top.aerohaku.androidapp.playback.PositionEstimator
+import top.aerohaku.androidapp.playback.TransportController
 
 data class LyricUiState(
   val positionMs: Long = 0L,
@@ -54,7 +55,13 @@ class VisualizerViewModel : ViewModel() {
 
   val lyricUi: StateFlow<LyricUiState> =
     combine(NowPlayingState.nowPlaying, LyricsRepository.state, clock) { nowPlaying, lyricsState, now ->
-      val position = positionEstimator.estimate(nowPlaying, now)
+      val position = positionEstimator.estimate(
+        nowPlaying = nowPlaying,
+        now = now,
+        // 刚拖完进度条发出的 seek 还没被会话确认时，让它先盖住旧位置 ——
+        // 否则进度条会先回弹一下再跳过去（见 PositionEstimator）
+        pendingSeek = TransportController.pendingSeek(now),
+      )
       val lines = (lyricsState as? LyricsState.Ready)?.lines.orEmpty()
       LyricUiState(
         positionMs = position,

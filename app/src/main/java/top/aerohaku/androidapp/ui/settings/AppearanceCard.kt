@@ -23,8 +23,10 @@ import top.aerohaku.androidapp.theme.ScexColors
 import top.aerohaku.androidapp.theme.ScexGhostButton
 import top.aerohaku.androidapp.theme.ScexSlider
 import top.aerohaku.androidapp.theme.ScexSwitch
+import top.aerohaku.androidapp.ui.layout.BlurAlgorithm
 import top.aerohaku.androidapp.ui.layout.LyricsAlign
 import top.aerohaku.androidapp.ui.layout.VisualizerAppearanceStore
+import kotlin.math.roundToInt
 
 /**
  * 外观配置：背景暗化强度 / 专辑封面白框 / 歌词对齐。
@@ -46,6 +48,41 @@ fun AppearanceCard(modifier: Modifier = Modifier) {
       onValueChange = { VisualizerAppearanceStore.setBackgroundDarken(context, it) },
       dragLabel = "背景暗化",
     )
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+      LabeledValue("背景虚化", modifier = Modifier.weight(1f))
+      ScexSwitch(
+        checked = appearance.backgroundBlur.enabled,
+        onCheckedChange = { VisualizerAppearanceStore.setBackgroundBlurEnabled(context, it) },
+      )
+    }
+    if (appearance.backgroundBlur.enabled) {
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        LabeledValue("虚化算法", modifier = Modifier.weight(1f))
+        BlurAlgorithm.entries.forEach { option ->
+          ChoiceChip(
+            text = option.label,
+            selected = appearance.backgroundBlur.algorithm == option,
+            onClick = { VisualizerAppearanceStore.setBackgroundBlurAlgorithm(context, option) },
+          )
+          Spacer(Modifier.width(6.dp))
+        }
+      }
+      Hint(appearance.backgroundBlur.algorithm.note)
+
+      FloatSlider(
+        label = "虚化程度",
+        value = appearance.backgroundBlur.amount.toFloat(),
+        range = VisualizerAppearanceStore.MIN_BLUR_AMOUNT.toFloat()..
+          VisualizerAppearanceStore.MAX_BLUR_AMOUNT.toFloat(),
+        display = VisualizerAppearanceStore.formatBlurAmount(appearance.backgroundBlur.amount),
+        onChange = { VisualizerAppearanceStore.setBackgroundBlurAmount(context, it.roundToInt()) },
+      )
+      Hint(
+        "模糊在缩小到短边 128 像素的缩略图上做，再放大铺满整屏 —— " +
+          "既没有放大痕迹，开销也和屏幕分辨率无关。程度 0 就是不卷积。",
+      )
+    }
 
     Spacer(Modifier.width(1.dp))
 

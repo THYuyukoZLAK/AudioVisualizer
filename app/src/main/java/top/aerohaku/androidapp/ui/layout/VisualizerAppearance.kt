@@ -11,10 +11,53 @@ enum class LyricsAlign(val label: String) {
   END("右对齐"),
 }
 
+/**
+ * 背景虚化算法。
+ *
+ * 两个降采样相关的选项也列在这里，因为它们的**观感差别是真实存在的**：
+ * 逐级缩小再放大会留下轻微的块感，而卷积能把它抹平。
+ *
+ * 全部在**缩小后的缩略图**上做（见 `ui/components/BackgroundBlur.kt`），
+ * 所以切换算法不影响绘制路径、也与屏幕分辨率无关。
+ */
+enum class BlurAlgorithm(val label: String, val note: String) {
+  GAUSSIAN(
+    "高斯",
+    "可分离高斯核，最平滑，代价是半径大时慢一些。",
+  ),
+  BOX3(
+    "均值 ×3",
+    "三遍盒式均值：按中心极限定理已经非常接近高斯，而滑动窗口让它快到与半径无关。",
+  ),
+  BOX1(
+    "均值 ×1",
+    "只做一遍，最便宜，但会留下一点方形结构。",
+  ),
+  DOWNSCALE(
+    "仅缩放",
+    "完全不做卷积，只靠逐级缩小再放大铺满；放大痕迹最明显。",
+  ),
+}
+
+/**
+ * 背景虚化配置。
+ *
+ * 三个值绑定在一起传：它们必须同时决定同一张缩略图。
+ * 分开传容易出现「选了均值、用的却是高斯的半径」这种不一致。
+ */
+data class BackgroundBlur(
+  val enabled: Boolean = true,
+  val algorithm: BlurAlgorithm = BlurAlgorithm.GAUSSIAN,
+  /** 0..100。0 = 不卷积，只缩小（等同 [BlurAlgorithm.DOWNSCALE]） */
+  val amount: Int = VisualizerAppearanceStore.DEFAULT_BLUR_AMOUNT,
+)
+
 /** 与「摆哪儿」无关的纯外观参数 */
 data class VisualizerAppearance(
   /** 背景暗化强度 0..1 */
   val backgroundDarken: Float = VisualizerAppearanceStore.DEFAULT_DARKEN,
+  /** 背景虚化：开关 / 算法 / 程度，见 [BackgroundBlur] */
+  val backgroundBlur: BackgroundBlur = BackgroundBlur(),
   /** 专辑封面是否画白框（宽度固定为 1 **物理像素**的发丝线） */
   val albumArtBorder: Boolean = true,
   /** 歌词对齐方式：与位置一起由版式预设决定（见 [LayoutPreset]） */
@@ -56,6 +99,11 @@ object VisualizerAppearanceStore {
   const val MIN_DARKEN = 0f
   const val MAX_DARKEN = 0.85f
 
+  /** 背景虚化程度 0..100。默认 60：观感上已经是一片柔和过渡，又不会糊成色块 */
+  const val DEFAULT_BLUR_AMOUNT = 60
+  const val MIN_BLUR_AMOUNT = 0
+  const val MAX_BLUR_AMOUNT = 100
+
   private val _state = MutableStateFlow(VisualizerAppearance())
   val state: StateFlow<VisualizerAppearance> = _state.asStateFlow()
 
@@ -70,6 +118,17 @@ object VisualizerAppearanceStore {
         backgroundDarken = prefs
           .getFloat(KEY_DARKEN, DEFAULT_DARKEN)
           .coerceIn(MIN_DARKEN, MAX_DARKEN),
+        backgroundBlur = BackgroundBlur(
+          enabled = prefs.getBoolean(KEY_BLUR_ENABLED, true),
+          // 认不出的值（手动改过配置文件）退回默认，而不是崩掉
+          algorithm = runCatching {
+            BlurAlgorithm.valueOf(
+              prefs.getString(KEY_BLUR_ALGORITHM, null) ?: BlurAlgorithm.GAUSSIAN.name,
+            )
+          }.getOrDefault(BlurAlgorithm.GAUSSIAN),
+          amount = prefs.getInt(KEY_BLUR_AMOUNT, DEFAULT_BLUR_AMOUNT)
+            .coerceIn(MIN_BLUR_AMOUNT, MAX_BLUR_AMOUNT),
+        ),
         albumArtBorder = prefs.getBoolean(KEY_BORDER, true),
         lyricsAlign = runCatching {
           LyricsAlign.valueOf(prefs.getString(KEY_LYRICS_ALIGN, null) ?: LyricsAlign.START.name)
@@ -91,6 +150,29 @@ object VisualizerAppearanceStore {
 
   fun setBackgroundDarken(context: Context, value: Float) {
     _state.value = _state.value.copy(backgroundDarken = value.coerceIn(MIN_DARKEN, MAX_DARKEN))
+    persist(context)
+  }
+
+  fun setBackgroundBlurEnabled(context: Context, enabled: Boolean) {
+    _state.value = _state.value.copy(
+      backgroundBlur = _state.value.backgroundBlur.copy(enabled = enabled),
+    )
+    persist(context)
+  }
+
+  fun setBackgroundBlurAlgorithm(context: Context, algorithm: BlurAlgorithm) {
+    _state.value = _state.value.copy(
+      backgroundBlur = _state.value.backgroundBlur.copy(algorithm = algorithm),
+    )
+    persist(context)
+  }
+
+  fun setBackgroundBlurAmount(context: Context, amount: Int) {
+    _state.value = _state.value.copy(
+      backgroundBlur = _state.value.backgroundBlur.copy(
+        amount = amount.coerceIn(MIN_BLUR_AMOUNT, MAX_BLUR_AMOUNT),
+      ),
+    )
     persist(context)
   }
 
@@ -128,6 +210,9 @@ object VisualizerAppearanceStore {
     val prefs = context.applicationContext.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
     prefs.edit().apply {
       putFloat(KEY_DARKEN, _state.value.backgroundDarken)
+      putBoolean(KEY_BLUR_ENABLED, _state.value.backgroundBlur.enabled)
+      putString(KEY_BLUR_ALGORITHM, _state.value.backgroundBlur.algorithm.name)
+      putInt(KEY_BLUR_AMOUNT, _state.value.backgroundBlur.amount)
       putBoolean(KEY_BORDER, _state.value.albumArtBorder)
       putString(KEY_LYRICS_ALIGN, _state.value.lyricsAlign.name)
       putBoolean(KEY_AUTO_SCALE, _state.value.autoScale)
@@ -138,6 +223,9 @@ object VisualizerAppearanceStore {
   }
 
   private const val KEY_DARKEN = "backgroundDarken"
+  private const val KEY_BLUR_ENABLED = "backgroundBlurEnabled"
+  private const val KEY_BLUR_ALGORITHM = "backgroundBlurAlgorithm"
+  private const val KEY_BLUR_AMOUNT = "backgroundBlurAmount"
   private const val KEY_BORDER = "albumArtBorder"
   private const val KEY_LYRICS_ALIGN = "lyricsAlign"
   private const val KEY_AUTO_SCALE = "autoScale"
@@ -149,4 +237,7 @@ object VisualizerAppearanceStore {
 
   /** 供 UI 显示：暗化强度 → 百分比文本 */
   fun formatDarken(value: Float): String = "${(value * 100).toInt()}%"
+
+  /** 供 UI 显示：模糊程度 → 百分比文本 */
+  fun formatBlurAmount(value: Int): String = "$value%"
 }

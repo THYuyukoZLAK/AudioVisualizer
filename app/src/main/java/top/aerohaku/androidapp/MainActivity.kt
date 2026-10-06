@@ -1,5 +1,8 @@
 package top.aerohaku.androidapp
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.os.Bundle
@@ -24,6 +27,11 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import top.aerohaku.androidapp.display.DisplayRefresh
 import top.aerohaku.androidapp.display.ScreenSettingsStore
@@ -60,6 +68,7 @@ class MainActivity : ComponentActivity() {
             MainNavigation()
             PortraitGuard()
             KeepScreenOnEffect()
+            ImmersiveEffect()
           }
         }
       }
@@ -99,6 +108,81 @@ private fun KeepScreenOnEffect() {
     view.keepScreenOn = settings.keepScreenOn
     onDispose { view.keepScreenOn = false }
   }
+}
+
+/**
+ * 全屏：隐藏状态栏与任务栏。
+ *
+ * ## 为什么不用清单里的全屏主题
+ *
+ * `android:theme` 那套 `windowFullscreen` 只能盖住**状态栏**；导航栏/任务栏要靠已废弃的
+ * `SYSTEM_UI_FLAG_HIDE_NAVIGATION`，而那种「硬隐藏」在 Android 11+ 会被系统限制，
+ * 还会丢掉「划一下临时唤出」的能力。
+ *
+ * 这里用 [WindowInsetsControllerCompat] 的 immersive 模式：
+ * `hide(systemBars())` + `BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE`。
+ *
+ * ## 本机的任务栏确实能被收掉
+ *
+ * 联想 TB321FU 是 Android 15 / `ro.build.characteristics=tablet`，
+ * `dumpsys activity service SystemUIService` 里有
+ * `com.android.systemui.navigationbar.TaskbarDelegate` —— 平板那条常驻任务栏。
+ * 它挂在 `navigationBars()` 的 insets 上，所以会跟着一起收掉。
+ *
+ * ⚠️ 用 compat 类而不是平台 `WindowInsetsController`（API 30+）：本应用 minSdk 29，
+ * compat 会在 Android 10 上退回 `SYSTEM_UI_FLAG_IMMERSIVE_STICKY` 那条路。
+ *
+ * ⚠️ **每次回到前台都要重新施加一次**：切出去再回来（尤其是经过分屏/多窗口）时
+ * 系统会把系统栏还回来。所以挂在 ON_RESUME 上，而不是只在设置变化时做一次。
+ */
+@Composable
+private fun ImmersiveEffect() {
+  val view = LocalView.current
+  val lifecycleOwner = LocalLifecycleOwner.current
+  val settings by ScreenSettingsStore.state.collectAsStateWithLifecycle()
+
+  DisposableEffect(view, lifecycleOwner, settings.hideSystemBars) {
+    val window = view.context.findActivity()?.window
+    if (window == null) return@DisposableEffect onDispose { }
+
+    fun apply() {
+      val controller = WindowInsetsControllerCompat(window, view)
+      if (settings.hideSystemBars) {
+        controller.systemBarsBehavior =
+          WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller.hide(WindowInsetsCompat.Type.systemBars())
+      } else {
+        controller.show(WindowInsetsCompat.Type.systemBars())
+      }
+    }
+
+    apply()
+    val observer = LifecycleEventObserver { _, event ->
+      if (event == Lifecycle.Event.ON_RESUME) apply()
+    }
+    lifecycleOwner.lifecycle.addObserver(observer)
+
+    onDispose {
+      lifecycleOwner.lifecycle.removeObserver(observer)
+      // 界面退场时把系统栏还回去：否则从本界面跳到系统设置时，
+      // 那边也会是「没有状态栏」的观感，用户会莫名其妙
+      runCatching {
+        WindowInsetsControllerCompat(window, view).show(WindowInsetsCompat.Type.systemBars())
+      }
+    }
+  }
+}
+
+/**
+ * 从 Context 里找 Activity。
+ *
+ * 不能直接 `view.context as? Activity`：Compose 拿到的 context 通常包了一层
+ * `ContextWrapper`，直接强转在部分 ROM 上会得到 null（系统栏就会静默地不生效）。
+ */
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+  is Activity -> this
+  is ContextWrapper -> baseContext.findActivity()
+  else -> null
 }
 
 /**
