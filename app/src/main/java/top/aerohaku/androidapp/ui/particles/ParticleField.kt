@@ -12,8 +12,8 @@ import kotlin.random.Random
  * 所以这边改成了不会误读的 `FROM_*`。
  */
 enum class ParticleDirection(val label: String, val description: String) {
-  RANDOM("随机漂移", "每个粒子沿平滑噪声缓慢转向，不会看出重复"),
-  FORWARD("迎面而来", "从深处冲向镜头，越近越大越快"),
+  RANDOM("随机漂移", "每个粒子沿平滑噪声缓慢转向"),
+  FORWARD("迎面而来", "从深处冲向镜头"),
   BACKWARDS("向远方去", "从镜头前退回深处"),
   FROM_LEFT("从左侧来", "贴着左边进入，向右横穿"),
   FROM_RIGHT("从右侧来", "贴着右边进入，向左横穿"),

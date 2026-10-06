@@ -20,6 +20,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -64,14 +65,15 @@ fun LevelMeterView(
   frames: StateFlow<AudioFrame>,
   modifier: Modifier = Modifier,
   showScale: Boolean = false,
+  color: Color = VizStyle.Fill,
 ) {
   val frame by frames.collectAsStateWithLifecycle()
 
   // 两行平分部件高度；用 weight 而不是 fillMaxHeight —— 后者的高度上限是整个部件，
   // 两行叠加会溢出容器
   Column(modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-    MeterRow("L", frame.rmsDbL, frame.peakDbL, showScale, Modifier.weight(1f))
-    MeterRow("R", frame.rmsDbR, frame.peakDbR, showScale, Modifier.weight(1f))
+    MeterRow("L", frame.rmsDbL, frame.peakDbL, showScale, color, Modifier.weight(1f))
+    MeterRow("R", frame.rmsDbR, frame.peakDbR, showScale, color, Modifier.weight(1f))
   }
 }
 
@@ -81,11 +83,12 @@ private fun MeterRow(
   rmsDb: Float,
   peakDb: Float,
   showScale: Boolean,
+  color: Color,
   modifier: Modifier = Modifier,
 ) {
-  // 文本测量放在 draw 之外：每帧重新测量就白费了
+  // 文本测量放在 draw 之外：每帧重新测量就白费了（颜色变了要重新测）
   val measurer = rememberTextMeasurer()
-  val ticks = remember(measurer, showScale) {
+  val ticks = remember(measurer, showScale, color) {
     if (!showScale) {
       emptyList()
     } else {
@@ -93,7 +96,7 @@ private fun MeterRow(
         db to measurer.measure(
           text = AnnotatedString("$db"),
           style = TextStyle(
-            color = VizStyle.Fill.copy(alpha = 0.9f),
+            color = color.copy(alpha = 0.9f),
             fontSize = 9.sp,
             fontFamily = FontFamily.Monospace,
             shadow = VizStyle.TextShadow,
@@ -118,7 +121,7 @@ private fun MeterRow(
     Text(
       text = label,
       modifier = Modifier.width(LABEL_WIDTH_DP.dp),
-      color = VizStyle.Fill,
+      color = color,
       fontSize = 12.sp,
       fontFamily = FontFamily.Monospace,
       fontWeight = FontWeight.Bold,
@@ -143,7 +146,7 @@ private fun MeterRow(
       ticks.forEach { (db, _) ->
         val x = VizStyle.meterFraction(db.toFloat()) * size.width
         drawRect(
-          color = VizStyle.Fill.copy(alpha = SCALE_LINE_ALPHA),
+          color = color.copy(alpha = SCALE_LINE_ALPHA),
           topLeft = Offset((x - SCALE_LINE_WIDTH / 2f).coerceIn(0f, size.width - SCALE_LINE_WIDTH), 0f),
           size = Size(SCALE_LINE_WIDTH, size.height),
         )
@@ -152,7 +155,7 @@ private fun MeterRow(
       val rmsWidth = VizStyle.meterFraction(rmsDb) * size.width
       if (rmsWidth > 0.5f) {
         drawRect(
-          color = VizStyle.Fill.copy(alpha = RMS_ALPHA),
+          color = color.copy(alpha = RMS_ALPHA),
           topLeft = Offset(0f, barTop),
           size = Size(rmsWidth, barHeight),
         )
@@ -161,7 +164,7 @@ private fun MeterRow(
       val peakX = VizStyle.meterFraction(peakDb) * size.width
       if (peakX > 1f) {
         drawRect(
-          color = VizStyle.Fill,
+          color = color,
           topLeft = Offset((peakX - PEAK_LINE_WIDTH).coerceIn(0f, size.width - PEAK_LINE_WIDTH), barTop),
           size = Size(PEAK_LINE_WIDTH, barHeight),
         )
@@ -195,7 +198,7 @@ private fun MeterRow(
     Text(
       text = formatDb(rmsDb),
       modifier = Modifier.width(VALUE_WIDTH_DP.dp),
-      color = VizStyle.Fill,
+      color = color,
       fontSize = 12.sp,
       fontFamily = FontFamily.Monospace,
       textAlign = TextAlign.End,

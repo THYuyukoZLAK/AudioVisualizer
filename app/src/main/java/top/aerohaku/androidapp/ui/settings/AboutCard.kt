@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -19,6 +20,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
@@ -27,12 +29,19 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.launch
 import top.aerohaku.androidapp.R
 import top.aerohaku.androidapp.theme.JetBrainsMono
 import top.aerohaku.androidapp.theme.ScexCard
 import top.aerohaku.androidapp.theme.ScexColors
 import top.aerohaku.androidapp.theme.ScexGhostButton
 import top.aerohaku.androidapp.theme.ScexLabel
+import top.aerohaku.androidapp.ui.components.ExternalLinkIcon
+import top.aerohaku.androidapp.update.RELEASES_URL
+import top.aerohaku.androidapp.update.REPO_URL
+import top.aerohaku.androidapp.update.ReleaseInfo
+import top.aerohaku.androidapp.update.UpdateCheckResult
+import top.aerohaku.androidapp.update.UpdateChecker
 
 /**
  * 「关于」卡片。
@@ -67,7 +76,31 @@ fun AboutCard(modifier: Modifier = Modifier) {
   // 名称/版本都从 PackageManager 读，而不是 BuildConfig —— 见 readAppInfo 的说明
   val appInfo = remember { readAppInfo(context) }
 
-  ScexCard(title = "关于", modifier = modifier) {
+  // 「检查更新」的状态。只在用户点了按钮之后才有值 —— 不做自动检查（见下方注释）
+  var updateState by remember { mutableStateOf<UpdateUi>(UpdateUi.Idle) }
+  var showNotes by remember { mutableStateOf(false) }
+  val scope = rememberCoroutineScope()
+
+  fun startCheck() {
+    if (updateState is UpdateUi.Checking) return
+    val version = appInfo?.versionName
+    if (version == null) {
+      updateState = UpdateUi.Failed("读不到当前应用的版本号，无法比较。")
+      return
+    }
+    updateState = UpdateUi.Checking
+    scope.launch {
+      updateState = when (val result = UpdateChecker.check(version)) {
+        is UpdateCheckResult.UpToDate -> UpdateUi.UpToDate(result.latest)
+        is UpdateCheckResult.UpdateAvailable -> UpdateUi.Available(result.release)
+        is UpdateCheckResult.Failed -> UpdateUi.Failed(
+          result.reason.message + (result.detail?.let { "（$it）" } ?: ""),
+        )
+      }
+    }
+  }
+
+  ScexCard(title = "关于", showLeftBar = true, modifier = modifier) {
     // ------------------------------------------------------------ 应用信息
     ScexLabel("应用信息")
     Text(
@@ -80,17 +113,12 @@ fun AboutCard(modifier: Modifier = Modifier) {
       text = if (appInfo == null) {
         "版本信息读取失败"
       } else {
-        "版本 ${appInfo.versionName}（versionCode ${appInfo.versionCode}）"
+        "${appInfo.versionName}（versionCode ${appInfo.versionCode}）"
       },
       color = ScexColors.Body,
       style = MaterialTheme.typography.bodySmall,
     )
     if (appInfo != null) {
-      Text(
-        text = "包名 ${appInfo.packageName}",
-        color = ScexColors.Body,
-        style = MaterialTheme.typography.bodySmall,
-      )
       Text(
         text = "系统要求 Android ${androidVersionName(appInfo.minSdk)} 及以上" +
           "（minSdk ${appInfo.minSdk} / targetSdk ${appInfo.targetSdk}）",
@@ -123,10 +151,76 @@ fun AboutCard(modifier: Modifier = Modifier) {
 
     Spacer(Modifier.height(4.dp))
 
+    // ------------------------------------------------------------ 检查更新
+    //
+    // 只在用户点按钮时查，**不做自动检查**：目标用户大都在中国大陆，连 GitHub
+    // 常常要等十几秒才失败 —— 一进「关于」页就自动去撞一次网络，既要等又没意义。
+    //
+    // ‼️ 查不到**不能影响任何其它功能**：所有失败都只是几行提示，并且始终留一条
+    //    「用浏览器打开 Releases 页面」的退路（那条路不经过 api.github.com）。
+    ScexLabel("检查更新")
+    Text(
+      text = when (val state = updateState) {
+        is UpdateUi.Idle -> "需要手动查询 GitHub Releases，国内用户可能无法直连。"
+        is UpdateUi.Checking -> "正在查询 GitHub Releases…"
+        is UpdateUi.UpToDate -> "已是最新版本（远端为 ${state.latest}）。"
+        is UpdateUi.Available ->
+          "发现新版本 ${state.release.tag}（当前 ${appInfo?.versionName ?: "?"}）。"
+        is UpdateUi.Failed -> state.message
+      },
+      color = when (updateState) {
+        is UpdateUi.Failed -> ScexColors.Warning
+        is UpdateUi.Available -> ScexColors.Success
+        else -> ScexColors.Body
+      },
+      style = MaterialTheme.typography.bodySmall,
+    )
+
+    val release = (updateState as? UpdateUi.Available)?.release
+    if (release != null && release.notes.isNotEmpty()) {
+      ScexGhostButton(
+        text = if (showNotes) "收起更新说明" else "展开更新说明",
+        onClick = { showNotes = !showNotes },
+      )
+      if (showNotes) {
+        // 和许可证全文一样：不套 verticalScroll，直接参与外层滚动
+        Column(
+          Modifier
+            .fillMaxWidth()
+            .background(ScexColors.CodeBackground)
+            .padding(12.dp),
+        ) {
+          Text(
+            text = release.notes,
+            color = ScexColors.CodeText,
+            fontFamily = JetBrainsMono,
+            fontSize = 11.sp,
+            lineHeight = 16.sp,
+          )
+        }
+      }
+    }
+
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+      ScexGhostButton(
+        text = if (updateState is UpdateUi.Checking) "正在查询…" else "检查更新",
+        onClick = { startCheck() },
+      )
+      // 有结论（或失败）就给退路按钮。查询接口不通时这是唯一可行的路，所以两个分支共用
+      if (updateState is UpdateUi.Available || updateState is UpdateUi.Failed) {
+        ScexGhostButton(
+          text = "打开 Releases 页面",
+          onClick = { openUrl(context, release?.pageUrl ?: RELEASES_URL) },
+        )
+      }
+    }
+
+    Spacer(Modifier.height(4.dp))
+
     // ------------------------------------------------------------ 开源许可
     ScexLabel("开源许可")
     Text(
-      text = "本应用自身代码以 MIT License 发布，Copyright (c) 2026 THYuyukoZLAK。",
+      text = "本应用自身代码以 MIT License 发布\nCopyright (c) 2026 THYuyukoZLAK。",
       color = ScexColors.Body,
       style = MaterialTheme.typography.bodySmall,
     )
@@ -135,9 +229,7 @@ fun AboutCard(modifier: Modifier = Modifier) {
         "（ui/particles/ParticleField.kt）两处实现，移植/改写自 LLin —— " +
         "osu! 插件 IGPlayer，即「mfosu」：\n" +
         "github.com/MATRIX-feather/LLin\n" +
-        "MIT License, Copyright (c) 2025 MATRIX-feather\n" +
-        "两者许可证相同（均为 MIT），无冲突；已完整保留其版权声明与许可声明。" +
-        "未使用该项目的任何美术资源、贴图或二进制文件。",
+        "MIT License, Copyright (c) 2025 MATRIX-feather",
       color = ScexColors.Body,
       style = MaterialTheme.typography.bodySmall,
     )
@@ -159,6 +251,8 @@ fun AboutCard(modifier: Modifier = Modifier) {
       ScexGhostButton(
         text = "GitHub 仓库",
         onClick = { openUrl(context, REPO_URL) },
+        // 「会跳到应用外部」这件事得提前说出来，别让用户点下去才发现
+        icon = { ExternalLinkIcon(color = ScexColors.Muted, modifier = Modifier.size(13.dp)) },
       )
     }
 
@@ -180,21 +274,6 @@ fun AboutCard(modifier: Modifier = Modifier) {
         )
       }
     }
-
-    Spacer(Modifier.height(4.dp))
-
-    // ------------------------------------------------------------ 联系开发者
-    ScexLabel("联系开发者")
-    Text(
-      text = "Email  xiazihe051130@hotmail.com",
-      color = ScexColors.Body,
-      style = MaterialTheme.typography.bodySmall,
-    )
-    Text(
-      text = "QQ  1161254733",
-      color = ScexColors.Body,
-      style = MaterialTheme.typography.bodySmall,
-    )
   }
 }
 
@@ -252,12 +331,18 @@ private fun androidVersionName(api: Int): String = when (api) {
 }
 
 /**
- * ⚠️ **占位待填** —— 仓库地址定下来后改这一行即可。
+ * 「检查更新」的界面状态。
  *
- * 用 `const val` 而不是塞进 `strings.xml`：它只在这个按钮上用一次，
- * 而且跟旁边的许可证文字一样属于「写死的元信息」，改的时候在一个文件里就能看到。
+ * [ReleaseInfo] / [UpdateCheckResult] 在 `update` 包里，不直接当界面状态用 ——
+ * 失败信息在这一层就已经翻成了给用户看的一句话。
  */
-private const val REPO_URL = "https://github.com/THYuyukoZLAK/AudioVisualizer"
+private sealed interface UpdateUi {
+  data object Idle : UpdateUi
+  data object Checking : UpdateUi
+  data class UpToDate(val latest: String) : UpdateUi
+  data class Available(val release: ReleaseInfo) : UpdateUi
+  data class Failed(val message: String) : UpdateUi
+}
 
 /**
  * 用外部应用打开链接。
@@ -266,7 +351,7 @@ private const val REPO_URL = "https://github.com/THYuyukoZLAK/AudioVisualizer"
  * 目标可能是个独立任务里的浏览器，缺了它某些 ROM 会直接抛异常。
  * 整个调用包在 `runCatching` 里 —— 设备上没有任何浏览器时不能把 App 带崩。
  */
-private fun openUrl(context: Context, url: String) {
+internal fun openUrl(context: Context, url: String) {
   runCatching {
     context.startActivity(
       Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),

@@ -8,6 +8,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -32,6 +33,8 @@ fun LyricsView(
   line: LyricLine?,
   align: LyricsAlign,
   modifier: Modifier = Modifier,
+  color: Color = VizStyle.Fill,
+  fontScale: Float = 1f,
 ) {
   val alignment = if (align == LyricsAlign.END) Alignment.End else Alignment.Start
   val textAlign = if (align == LyricsAlign.END) TextAlign.End else TextAlign.Start
@@ -43,8 +46,8 @@ fun LyricsView(
   ) {
     Text(
       text = line?.text?.takeIf { it.isNotBlank() } ?: PLACEHOLDER,
-      color = VizStyle.Fill,
-      fontSize = 24.sp,
+      color = color,
+      fontSize = (MAIN_FONT_SP * fontScale).sp,
       fontWeight = FontWeight.Bold,
       textAlign = textAlign,
       style = TextStyle(shadow = VizStyle.TextShadow),
@@ -57,8 +60,8 @@ fun LyricsView(
     if (translation != null) {
       Text(
         text = translation,
-        color = VizStyle.Fill.copy(alpha = 0.78f),
-        fontSize = 16.sp,
+        color = color.copy(alpha = 0.78f),
+        fontSize = (SUB_FONT_SP * fontScale).sp,
         textAlign = textAlign,
         style = TextStyle(shadow = VizStyle.TextShadow),
         maxLines = 2,
@@ -70,3 +73,7 @@ fun LyricsView(
 }
 
 private const val PLACEHOLDER = "♪"
+
+/** 歌词原文与译文的基准字号（sp），实际字号再乘部件的 fontScale */
+private const val MAIN_FONT_SP = 24f
+private const val SUB_FONT_SP = 16f

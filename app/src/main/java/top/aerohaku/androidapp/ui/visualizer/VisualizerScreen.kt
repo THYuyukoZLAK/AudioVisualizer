@@ -1,5 +1,6 @@
 package top.aerohaku.androidapp.ui.visualizer
 
+import android.Manifest
 import android.app.Activity
 import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
@@ -12,6 +13,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -40,6 +42,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -63,15 +66,19 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
 import top.aerohaku.androidapp.capture.AudioCaptureService
+import top.aerohaku.androidapp.capture.AudioSource
+import top.aerohaku.androidapp.capture.AudioSourceSettingsStore
 import top.aerohaku.androidapp.capture.CaptureController
 import top.aerohaku.androidapp.lyrics.LyricsState
 import top.aerohaku.androidapp.model.NowPlaying
 import top.aerohaku.androidapp.model.TargetApp
 import top.aerohaku.androidapp.permission.Permissions
+import top.aerohaku.androidapp.permission.ProjectionDisclosureStore
 import top.aerohaku.androidapp.playback.MetadataSettingsStore
 import top.aerohaku.androidapp.ui.components.AlbumArtBackground
 import top.aerohaku.androidapp.ui.components.GearIcon
 import top.aerohaku.androidapp.ui.components.TransportRail
+import top.aerohaku.androidapp.ui.settings.ProjectionDisclosureDialog
 import top.aerohaku.androidapp.ui.settings.SettingsScreen
 import top.aerohaku.androidapp.ui.settings.SliderHud
 import top.aerohaku.androidapp.ui.components.LevelMeterView
@@ -115,6 +122,19 @@ fun VisualizerScreen(
   // 拖动滑块时它要变透明，让用户实时看见背后可视化的变化。
   var showSettings by remember { mutableStateOf(false) }
   val lifecycleOwner = LocalLifecycleOwner.current
+
+  // 音频从哪来（屏幕录制捕获 / 全局混音）。默认屏幕录制捕获 —— 立体声 + 真实响度；
+  // 全局混音授权更轻，代价是丢响度、只剩单声道、弱音也被拉满（见 AudioSource）
+  AudioSourceSettingsStore.ensureLoaded(context)
+  val audioSource by AudioSourceSettingsStore.source.collectAsStateWithLifecycle()
+
+  // 装机后第一次启动：弹一次「关于屏幕录制授权」的说明（只弹一次，见 ProjectionDisclosureStore）。
+  // 它只解释「为什么需要」，不触发授权 —— 授权仍只在用户**真的开始捕获**时才要。
+  // 设置 → 播放 那边共用同一个标志，两边只会自动弹其中一次。
+  var showDisclosure by remember { mutableStateOf(false) }
+  LaunchedEffect(Unit) {
+    if (ProjectionDisclosureStore.shouldAutoShow(context)) showDisclosure = true
+  }
 
   val nowPlaying by viewModel.nowPlaying.collectAsStateWithLifecycle()
   val listenerConnected by viewModel.listenerConnected.collectAsStateWithLifecycle()
@@ -170,6 +190,22 @@ fun VisualizerScreen(
       postNotificationsGranted = granted
     }
 
+  // 全局混音路线要 RECORD_AUDIO（授权一次长期有效）。被拒就把原因写进状态条，
+  // 而不是静默失败 —— 否则用户只会看到频谱一直不动。
+  val recordAudioLauncher =
+    rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+      if (granted) {
+        AudioCaptureService.startMix(context)
+      } else {
+        CaptureController.setStatus(
+          CaptureController.Status(
+            CaptureController.Phase.ERROR,
+            message = "没有录音权限，全局混音模式无法工作；可在「设置 → 播放」里切回默认的「屏幕录制捕获」。",
+          ),
+        )
+      }
+    }
+
   val projectionLauncher =
     rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
       val data = result.data
@@ -183,24 +219,38 @@ fun VisualizerScreen(
     }
 
   val startCapture: () -> Unit = {
-    val manager = context.getSystemService(MediaProjectionManager::class.java)
-    if (manager == null) {
-      CaptureController.setStatus(
-        CaptureController.Status(CaptureController.Phase.ERROR, message = "系统没有 MediaProjectionManager"),
-      )
-    } else {
-      // API 34+ 用 createConfigForUserChoice()：授权页里会多出「仅共享单个应用」的选项。
-      //
-      // ⚠️ 说清楚它**并不能消掉警告**：官方文档明确写了「弹给用户的对话框与
-      // 直接调 createScreenCaptureIntent() 相同」。它的价值在于用户可以把实际捕获
-      // 范围收窄到单个应用（而不是整块屏幕），Scope 更小、心里更踏实。
-      // 我们其实只要音频，画面一帧都不读。
-      val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-        manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForUserChoice())
-      } else {
-        manager.createScreenCaptureIntent()
+    when (audioSource) {
+      // 全局混音：没有系统授权弹窗，只要一次 RECORD_AUDIO
+      AudioSource.SYSTEM_MIX -> {
+        if (Permissions.isRecordAudioGranted(context)) {
+          AudioCaptureService.startMix(context)
+        } else {
+          recordAudioLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
       }
-      projectionLauncher.launch(intent)
+
+      // 屏幕录制捕获：每次会话都要用户点一次系统的屏幕录制授权
+      AudioSource.PLAYBACK_CAPTURE -> {
+        val manager = context.getSystemService(MediaProjectionManager::class.java)
+        if (manager == null) {
+          CaptureController.setStatus(
+            CaptureController.Status(CaptureController.Phase.ERROR, message = "系统没有 MediaProjectionManager"),
+          )
+        } else {
+          // API 34+ 用 createConfigForUserChoice()：授权页里会多出「仅共享单个应用」的选项。
+          //
+          // ⚠️ 说清楚它**并不能消掉警告**：官方文档明确写了「弹给用户的对话框与
+          // 直接调 createScreenCaptureIntent() 相同」。它的价值在于用户可以把实际捕获
+          // 范围收窄到单个应用（而不是整块屏幕），Scope 更小、心里更踏实。
+          // 我们其实只要音频，画面一帧都不读。
+          val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForUserChoice())
+          } else {
+            manager.createScreenCaptureIntent()
+          }
+          projectionLauncher.launch(intent)
+        }
+      }
     }
   }
 
@@ -302,28 +352,48 @@ fun VisualizerScreen(
 
           AnchoredLayout(placements = placements, modifier = Modifier.fillMaxSize()) {
             visible.forEach { widget ->
-              SizedWidget(configs.getValue(widget)) {
+              val config = configs.getValue(widget)
+              val widgetColor = Color(config.color)
+              SizedWidget(config) {
                 when (widget) {
                   VisualizerWidget.PROGRESS ->
-                    ProgressBarView(lyricUi.positionMs, nowPlaying?.durationMs ?: 0L, Modifier.fillMaxSize())
+                    ProgressBarView(
+                      positionMs = lyricUi.positionMs,
+                      durationMs = nowPlaying?.durationMs ?: 0L,
+                      modifier = Modifier.fillMaxSize(),
+                      color = widgetColor,
+                    )
 
-                  VisualizerWidget.ALBUM_ART -> AlbumArtImage(artwork, albumArtBorder)
+                  VisualizerWidget.ALBUM_ART ->
+                    AlbumArtImage(artwork, albumArtBorder, widgetColor)
 
-                  VisualizerWidget.TRACK_INFO -> TrackInfo(nowPlaying)
+                  VisualizerWidget.TRACK_INFO ->
+                    TrackInfo(nowPlaying, widgetColor, config.fontScale)
 
-                  VisualizerWidget.LYRICS -> LyricsView(line = currentLine, align = appearance.lyricsAlign)
+                  VisualizerWidget.LYRICS -> LyricsView(
+                    line = currentLine,
+                    align = appearance.lyricsAlign,
+                    color = widgetColor,
+                    fontScale = config.fontScale,
+                  )
 
                   VisualizerWidget.SPECTRUM -> SpectrumView(
                     frames = viewModel.audioFrame,
                     showScale = appearance.showSpectrumScale,
+                    color = widgetColor,
+                    gain = config.gain,
                   )
 
                   VisualizerWidget.LEVEL_METERS -> LevelMeterView(
                     frames = viewModel.audioFrame,
                     showScale = appearance.showLevelScale,
+                    color = widgetColor,
                   )
 
-                  VisualizerWidget.WAVEFORM -> WaveformView(viewModel.audioFrame)
+                  VisualizerWidget.WAVEFORM -> WaveformView(
+                    frames = viewModel.audioFrame,
+                    color = widgetColor,
+                  )
                 }
               }
             }
@@ -393,6 +463,17 @@ fun VisualizerScreen(
           .padding(top = 8.dp),
       )
     }
+
+    // 7) 「关于屏幕录制授权」说明。首次启动自动弹一次；关掉时记下「已读」，以后不再自动弹
+    //    （随时可以在设置 → 播放里点按钮重看）。
+    if (showDisclosure) {
+      ProjectionDisclosureDialog(
+        onClose = {
+          ProjectionDisclosureStore.markShown(context)
+          showDisclosure = false
+        },
+      )
+    }
   }
 }
 
@@ -429,9 +510,20 @@ private fun SizedWidget(config: WidgetConfig, content: @Composable () -> Unit) {
   val fillWidth = config.width == null
   Box(
     Modifier
+      // 整体透明度套在最外层：它会与组件内部的「半透明」（刻度线、译文行等）相乘，
+      // 这正是预期行为 —— 部件越淡，里面的辅助元素也一起淡
+      .graphicsLayer { alpha = config.alpha }
       .clipToBounds()
       .then(if (fillWidth) Modifier.fillMaxWidth() else Modifier.width(config.width!!))
-      .then(if (config.height != null) Modifier.height(config.height) else Modifier)
+      .then(
+        when {
+          // 锁定 1:1：有固定宽度就取同高；宽度是「撑满」时用 aspectRatio 反推高度
+          config.lockAspect && config.width != null -> Modifier.height(config.width!!)
+          config.lockAspect -> Modifier.aspectRatio(1f)
+          config.height != null -> Modifier.height(config.height)
+          else -> Modifier
+        },
+      )
       .then(
         if (fillWidth && config.trailingInset > 0.dp) {
           Modifier.padding(end = config.trailingInset)
@@ -445,10 +537,10 @@ private fun SizedWidget(config: WidgetConfig, content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun AlbumArtImage(artwork: ImageBitmap?, borderWidth: Dp?) {
+private fun AlbumArtImage(artwork: ImageBitmap?, borderWidth: Dp?, color: Color) {
   Box(Modifier.fillMaxSize()) {
     if (artwork == null) {
-      Box(Modifier.fillMaxSize().background(VizStyle.Fill.copy(alpha = 0.12f)))
+      Box(Modifier.fillMaxSize().background(color.copy(alpha = 0.12f)))
     } else {
       Image(
         bitmap = artwork,
@@ -458,24 +550,24 @@ private fun AlbumArtImage(artwork: ImageBitmap?, borderWidth: Dp?) {
       )
     }
 
-    // 白框作为最后一个子元素画，保证压在封面之上（`Modifier.border` 的绘制顺序
+    // 边框作为最后一个子元素画，保证压在封面之上（`Modifier.border` 的绘制顺序
     // 在不同版本里不一定晚于 background，叠一层最稳）
     if (borderWidth != null) {
-      Box(Modifier.fillMaxSize().border(borderWidth, VizStyle.Fill))
+      Box(Modifier.fillMaxSize().border(borderWidth, color))
     }
   }
 }
 
 @Composable
-private fun TrackInfo(nowPlaying: NowPlaying?) {
+private fun TrackInfo(nowPlaying: NowPlaying?, color: Color, fontScale: Float) {
   // ⚠️ 只 fillMaxWidth：高度要自适应内容。
   // 用 fillMaxSize 的话在「高度自适应」的容器里会被拉满，文字被挤成立式居中。
   // 宽度由外层的 WidgetConfig 控制（默认 340dp），这里不再另设上限。
   Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.Center) {
     Text(
       text = nowPlaying?.title ?: "暂无播放",
-      color = VizStyle.Fill,
-      fontSize = 26.sp,
+      color = color,
+      fontSize = (TITLE_FONT_SP * fontScale).sp,
       fontWeight = FontWeight.Bold,
       style = TextStyle(shadow = VizStyle.TextShadow),
       maxLines = 2,
@@ -485,8 +577,8 @@ private fun TrackInfo(nowPlaying: NowPlaying?) {
     // 作者单独占一行（它是最常看的一项，不跟其他元数据挤在一起）
     Text(
       text = nowPlaying?.artist ?: "请在 ${TargetApp.LABEL} 中播放一首歌",
-      color = VizStyle.Fill.copy(alpha = 0.92f),
-      fontSize = 15.sp,
+      color = color.copy(alpha = 0.92f),
+      fontSize = (ARTIST_FONT_SP * fontScale).sp,
       style = TextStyle(shadow = VizStyle.TextShadow),
       maxLines = 1,
       overflow = TextOverflow.Ellipsis,
@@ -503,14 +595,19 @@ private fun TrackInfo(nowPlaying: NowPlaying?) {
         }
         if (nowPlaying?.liked == true) append(" · ♥")
       },
-      color = VizStyle.Fill.copy(alpha = 0.72f),
-      fontSize = 13.sp,
+      color = color.copy(alpha = 0.72f),
+      fontSize = (META_FONT_SP * fontScale).sp,
       style = TextStyle(shadow = VizStyle.TextShadow),
       maxLines = 1,
       overflow = TextOverflow.Ellipsis,
     )
   }
 }
+
+/** 曲目信息的三个基准字号（sp），实际字号再乘部件的 fontScale */
+private const val TITLE_FONT_SP = 26f
+private const val ARTIST_FONT_SP = 15f
+private const val META_FONT_SP = 13f
 
 private fun formatDuration(ms: Long): String {
   val totalSeconds = ms / 1000
@@ -557,7 +654,7 @@ private fun resolveHint(
   )
 
   fallbackEnabled && listenerNotBoundLong -> Hint(
-    "通知使用权看着已开启，但系统一直没绑定监听服务。可以到设置里把开关关掉、再打开一次。",
+    "通知使用权看着已开启，但系统一直没绑定监听服务。",
     "去设置",
     HintAction.OPEN_LISTENER_SETTINGS,
   )
@@ -570,7 +667,7 @@ private fun resolveHint(
 
   browserConnected -> when {
     !postNotificationsGranted -> Hint(
-      "建议开启通知权限，否则捕获时看不到前台服务通知",
+      "建议开启通知权限，否则捕获时看不到前台服务通知。",
       "去开启",
       HintAction.REQUEST_NOTIFICATIONS,
     )
@@ -587,13 +684,13 @@ private fun resolveHint(
   }
 
   browserStalled -> Hint(
-    "正在等待「${TargetApp.LABEL}」的曲目信息。一直没反应的话，可到设置里打开备用通道。",
-    "去设置",
+    "正在等待「${TargetApp.LABEL}」的曲目信息。",
+    "检查设置",
     HintAction.OPEN_APP_SETTINGS,
   )
 
   !postNotificationsGranted -> Hint(
-    "建议开启通知权限，否则捕获时看不到前台服务通知",
+    "建议开启通知权限，否则捕获时看不到前台服务通知。",
     "去开启",
     HintAction.REQUEST_NOTIFICATIONS,
   )

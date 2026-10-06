@@ -79,7 +79,12 @@ object Levels {
  * 而 `StateFlow` 靠 equals 去重 —— 用普通 class 的引用相等语义可以保证「每帧都是新值、一定下发」。
  */
 class AudioFrame(
-  /** 频谱柱高度，0..1，长度为 [SpectrumAnalyzer.BAR_COUNT] */
+  /**
+   * 频谱柱高度，长度为 [SpectrumAnalyzer.BAR_COUNT]。
+   *
+   * ⚠️ **可能大于 1** —— DSP 不做 0..1 裁剪（见 `SpectrumAnalyzer.buildFrame` 的说明），
+   * 由绘制层按部件自己的显示增益决定怎么缩放进画布。
+   */
   val spectrum: FloatArray,
   /** 波形显示点，-1..1，长度为 [SpectrumAnalyzer.WAVEFORM_POINTS] */
   val waveform: FloatArray,

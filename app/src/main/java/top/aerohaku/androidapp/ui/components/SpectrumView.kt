@@ -8,6 +8,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -42,18 +43,20 @@ fun SpectrumView(
   frames: StateFlow<AudioFrame>,
   modifier: Modifier = Modifier,
   showScale: Boolean = false,
+  color: Color = VizStyle.Fill,
+  gain: Float = 1f,
 ) {
   val frame by frames.collectAsStateWithLifecycle()
   val spectrum = frame.spectrum
 
-  // 文本测量放在 draw 之外：每帧重新测量就白费了
+  // 文本测量放在 draw 之外：每帧重新测量就白费了（颜色变了要重新测）
   val measurer = rememberTextMeasurer()
-  val scaleLabels = remember(measurer) {
+  val scaleLabels = remember(measurer, color) {
     SCALE_FRACTIONS.map { fraction ->
       fraction to measurer.measure(
         text = AnnotatedString("${(fraction * 100).toInt()}%"),
         style = TextStyle(
-          color = VizStyle.Fill.copy(alpha = 0.9f),
+          color = color.copy(alpha = 0.9f),
           fontSize = 9.sp,
           fontFamily = FontFamily.Monospace,
           shadow = VizStyle.TextShadow,
@@ -71,7 +74,7 @@ fun SpectrumView(
       scaleLabels.forEach { (fraction, _) ->
         val y = plotBottom - plotBottom * fraction
         drawRect(
-          color = VizStyle.Fill.copy(alpha = SCALE_LINE_ALPHA),
+          color = color.copy(alpha = SCALE_LINE_ALPHA),
           topLeft = Offset(0f, (y - SCALE_LINE_DP.dp.toPx() / 2f).coerceAtLeast(0f)),
           size = Size(size.width, SCALE_LINE_DP.dp.toPx()),
         )
@@ -83,21 +86,23 @@ fun SpectrumView(
     val barWidth = (slot * BAR_WIDTH_RATIO).coerceAtLeast(1f)
 
     for (index in 0 until count) {
-      val value = spectrum.getOrElse(index) { 0f }
+      // 增益在这里生效：DSP 给的是**未裁剪**的幅度，按部件自己的倍率缩放后才裁。
+      // 所以增益调小可以把过饱和的频谱从「满屏平顶」拉回有起伏的状态。
+      val value = (spectrum.getOrElse(index) { 0f } * gain).coerceIn(0f, 1f)
       if (value <= 0f) continue
       val height = value * plotBottom
       // 亚像素高度画出来会是一条灰线，不如直接不画
       if (height < 0.75f) continue
       drawRect(
-        color = VizStyle.Fill,
+        color = color,
         topLeft = Offset(index * slot + (slot - barWidth) / 2f, plotBottom - height),
         size = Size(barWidth, height),
       )
     }
 
-    // 2) 基座：横跨整个频谱宽度的一条白线
+    // 2) 基座：横跨整个频谱宽度的一条线
     drawRect(
-      color = VizStyle.Fill,
+      color = color,
       topLeft = Offset(0f, size.height - baseline),
       size = Size(size.width, baseline),
     )

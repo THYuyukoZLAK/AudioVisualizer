@@ -14,13 +14,13 @@ enum class LayoutPreset(val label: String, val description: String) {
   /** 初版版式：歌词独占右上角一大块 */
   LYRICS_RIGHT(
     label = "默认：歌词在右上",
-    description = "封面左上；歌曲数据在封面右侧；歌词在右上角，右对齐",
+    description = "歌曲数据在封面右侧；歌词在右上角，右对齐",
   ),
 
   /** 当前版式：歌词回到左列、占满整行 */
   LYRICS_BELOW(
     label = "默认：歌词在封面下方",
-    description = "封面左上；歌曲数据在封面右侧并占满余下整行；歌词在封面下方，占满整行、左对齐",
+    description = "歌曲数据在封面右侧并占满余下整行；歌词在封面下方，占满整行、左对齐",
   ),
   ;
 

@@ -161,7 +161,7 @@ private var cardIdCounter = 0
 private const val DIMMED_CARD_ALPHA = 0.10f
 
 /**
- * 面板卡片：面板底色 + 左侧 4px 青色竖条 + 直角。
+ * 面板卡片：面板底色 + 直角，可选左侧 4px 青色竖条。
  *
  * 拖动本卡片内的滑杆时，**其它卡片会一起变透明**（自己保持不透明），
  * 方便边调边看背后可视化界面的变化。
@@ -169,12 +169,15 @@ private const val DIMMED_CARD_ALPHA = 0.10f
  * ⚠️ 透明度只能在这一层施加。**不能**改成「给整页加 alpha」—— alpha 是**相乘**的，
  * 那样被拖动的卡片自己也会跟着淡，再也没法比父级更不透明。
  *
- * ⚠️ 竖条按 skill 的规定**仅单独卡片使用**。设置页里所有卡片都是竖直排列
- * （不存在「同一行并排」的情形），所以每张都带竖条是正确的。
+ * @param showLeftBar 是否画左侧那条 4px 青色竖条。
+ *   **默认不画**：skill 里竖条的规矩本来是「仅单独卡片使用」，
+ *   但设置页有十来张卡片竖直排开，张张带竖条会把视线切得很碎。
+ *   现在只有「关于」单独要它（见 `AboutCard`）。
  */
 @Composable
 fun ScexCard(
   title: String? = null,
+  showLeftBar: Boolean = false,
   modifier: Modifier = Modifier,
   content: @Composable ColumnScope.() -> Unit,
 ) {
@@ -192,7 +195,9 @@ fun ScexCard(
         .graphicsLayer { alpha = cardAlpha }
         .drawBehind {
           drawRect(ScexColors.Panel)
-          drawRect(ScexColors.AccentForm, size = Size(ScexColors.LeftBar.toPx(), size.height))
+          if (showLeftBar) {
+            drawRect(ScexColors.AccentForm, size = Size(ScexColors.LeftBar.toPx(), size.height))
+          }
         }
         .padding(start = 24.dp, end = 20.dp, top = 18.dp, bottom = 18.dp),
       verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -225,16 +230,32 @@ fun ScexPrimaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Mo
   }
 }
 
-/** 幽灵按钮：深底 + 边框，hover/按下才提亮 */
+/**
+ * 幽灵按钮：深底 + 边框，hover/按下才提亮。
+ *
+ * [icon] 是可选的**前置小图标**（默认没有）。做成参数而不是另开一个 composable：
+ * 所有按钮共用同一套内边距、边框与字号，拄一份出来迟早会走样。
+ */
 @Composable
-fun ScexGhostButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+fun ScexGhostButton(
+  text: String,
+  onClick: () -> Unit,
+  modifier: Modifier = Modifier,
+  icon: (@Composable () -> Unit)? = null,
+) {
   Box(
     modifier
       .border(1.dp, ScexColors.Border)
       .clickable(onClick = onClick)
       .padding(horizontal = 16.dp, vertical = 9.dp),
   ) {
-    Text(text, color = ScexColors.Body, fontSize = 14.sp)
+    Row(
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+      icon?.invoke()
+      Text(text, color = ScexColors.Body, fontSize = 14.sp)
+    }
   }
 }
 

@@ -7,6 +7,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
@@ -30,6 +31,7 @@ import top.aerohaku.androidapp.dsp.AudioFrame
 fun WaveformView(
   frames: StateFlow<AudioFrame>,
   modifier: Modifier = Modifier,
+  color: Color = VizStyle.Fill,
 ) {
   val frame by frames.collectAsStateWithLifecycle()
   val waveform = frame.waveform
@@ -38,7 +40,7 @@ fun WaveformView(
     val lineWidth = VizStyle.LINE_DP.dp.toPx()
 
     // 上下边界线：半透明，它们是量程提示而不是数据
-    val boundary = VizStyle.Fill.copy(alpha = BOUNDARY_ALPHA)
+    val boundary = color.copy(alpha = BOUNDARY_ALPHA)
     drawRect(boundary, Offset.Zero, Size(size.width, lineWidth))
     drawRect(boundary, Offset(0f, size.height - lineWidth), Size(size.width, lineWidth))
 
@@ -56,7 +58,7 @@ fun WaveformView(
       if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
     }
 
-    drawPath(path = path, color = VizStyle.Fill, style = Stroke(width = lineWidth))
+    drawPath(path = path, color = color, style = Stroke(width = lineWidth))
   }
 }
 

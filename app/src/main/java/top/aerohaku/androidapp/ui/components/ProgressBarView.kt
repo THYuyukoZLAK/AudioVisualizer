@@ -6,6 +6,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 
 /**
  * 顶部进度条：横跨整个屏幕，约 1~2mm 厚。
@@ -21,17 +22,18 @@ fun ProgressBarView(
   positionMs: Long,
   durationMs: Long,
   modifier: Modifier = Modifier,
+  color: Color = VizStyle.Fill,
 ) {
   val fraction = if (durationMs > 0L) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
 
   Canvas(modifier.fillMaxSize()) {
-    // 轨道：半透明白。
+    // 轨道：半透明。
     // 进度条是全屏宽度的刻度，必须能在**任意亮度**的封面上读出播放位置，
     // 所以这里保留轨道 —— 它是功能性元素，不是装饰背景。
-    drawRect(color = VizStyle.Fill.copy(alpha = 0.32f))
+    drawRect(color = color.copy(alpha = 0.32f))
     if (fraction > 0f) {
       drawRect(
-        color = VizStyle.Fill,
+        color = color,
         topLeft = Offset.Zero,
         size = Size(size.width * fraction, size.height),
       )

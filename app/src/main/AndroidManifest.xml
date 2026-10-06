@@ -8,15 +8,18 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <!--
-      ⚠️ 这里故意**不声明** RECORD_AUDIO —— 实测不需要：
-      音频主链路（MediaProjection + AudioPlaybackCaptureConfiguration）在
-      granted=false 的情况下照样能抓到目标应用的音频。
+      「全局混音」这个**备选**音频源需要下面两项：「屏幕录制捕获」（现在的默认）
+      那条路不需要 RECORD_AUDIO（MediaProjection + AudioPlaybackCapture 在 granted=false
+      时照样能抓到）。
 
-      曾经为了验证「Visualizer 效果器」这条备选音频路（它官方要求 RECORD_AUDIO）
-      临时声明过，现已确认不采用（2006-10-05 真机实测：能跑，但 maxCaptureRate 只有
-      20Hz、且是 8-bit 量化），所以那两项权限和探针一起删了 ——
-      声明一个用不上的敏感权限，对用户对应用商店都不是好事。
+      ⚠️ RECORD_AUDIO 是**危险权限**，所以只在用户真的选了全局混音时才在运行时申请。
+      它不是「录音」： Visualizer 返回的只有 8 位、低精度的可视化数据，
+      AOSP 文档也写明「It is not an audio recording interface」；
+      但效果器挂在**输出混音**上时，框架强制要求它（保护语音留言之类的隐私音频）。
+      MODIFY_AUDIO_SETTINGS 是 normal 权限，装包即给。
     -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
     <!-- Android 11+ 包可见性：不声明就查不到网易云的 uid（按 UID 精确捕获需要），
          而且默认元数据链路（MediaBrowser）也需要能解析到它的服务 -->

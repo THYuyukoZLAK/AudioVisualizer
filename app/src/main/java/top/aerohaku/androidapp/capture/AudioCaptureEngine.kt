@@ -41,7 +41,7 @@ import top.aerohaku.androidapp.model.TargetApp
  *
  * 本类只负责「抓音频 + 分析」，不负责前台服务与自动启停（那是 [AudioCaptureService] 的事）。
  */
-class AudioCaptureEngine(private val context: Context) {
+class AudioCaptureEngine(private val context: Context) : AudioFrameSource {
 
   private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -53,10 +53,10 @@ class AudioCaptureEngine(private val context: Context) {
   private var chunkSamples = 4096
 
   private val _frame = MutableStateFlow(AudioFrame.EMPTY)
-  val frame: StateFlow<AudioFrame> = _frame.asStateFlow()
+  override val frame: StateFlow<AudioFrame> = _frame.asStateFlow()
 
   /** 当前实际使用的格式，供状态显示用；未开始时为 null */
-  @Volatile var formatDescription: String? = null
+  @Volatile override var formatDescription: String? = null
     private set
 
   /** 实际拿到的声道数（1 或 2） */
@@ -68,7 +68,10 @@ class AudioCaptureEngine(private val context: Context) {
 
   val hasProjection: Boolean get() = projection != null
 
-  val isRecording: Boolean get() = recorder != null
+  /** 投影这条链路要等用户授权、拿到一次性令牌之后才算「就绪」 */
+  override val isReady: Boolean get() = hasProjection
+
+  override val isRecording: Boolean get() = recorder != null
 
   /** 取得 MediaProjection 授权。返回 null 表示成功，否则是错误信息。 */
   @SuppressLint("MissingPermission")
@@ -103,7 +106,7 @@ class AudioCaptureEngine(private val context: Context) {
 
   /** 开始读音频。返回 null 表示成功；重复调用是安全的（已在读就直接返回）。 */
   @SuppressLint("MissingPermission")
-  fun startRecording(): String? {
+  override fun startRecording(): String? {
     if (recorder != null) return null
 
     val activeProjection = projection ?: return "尚未获得捕获授权"
@@ -166,7 +169,7 @@ class AudioCaptureEngine(private val context: Context) {
     return "所有音频格式均失败：\n" + failures.joinToString("\n")
   }
 
-  fun stopRecording() {
+  override fun stopRecording() {
     readJob?.cancel()
     readJob = null
     recorder?.let { rec ->
@@ -178,7 +181,7 @@ class AudioCaptureEngine(private val context: Context) {
     _frame.value = AudioFrame.EMPTY
   }
 
-  fun release() {
+  override fun release() {
     stopRecording()
     runCatching { projection?.stop() }
     projection = null

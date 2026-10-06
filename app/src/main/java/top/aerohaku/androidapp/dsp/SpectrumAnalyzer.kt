@@ -382,7 +382,13 @@ class SpectrumAnalyzer(
   }
 
   private fun buildFrame(): AudioFrame {
-    val spectrum = FloatArray(bars) { (smoothed[it] * gain).coerceIn(0f, 1f) }
+    // ⚠️ 这里**不再**裁剪到 0..1。
+    // 以前是 `(smoothed[it] * gain).coerceIn(0f, 1f)`，增益后的过饱和部分全被压成 1.0，
+    // 频谱顶就出一条平线 —— 之后无论怎么调高部件，那条平线只会被拉高，
+    // 手感像在调「截断高度」而不是缩放。
+    // 现在把裁剪交给绘制层（按部件自己的显示增益），
+    // 「部件高度」与「显示增益」才是两个独立、看得见效果的参数。
+    val spectrum = FloatArray(bars) { smoothed[it] * gain }
 
     // 瞬时能量：直接把这一帧的 FFT 幅度求和。
     // 这是 mfosu 里 `MusicIntensityController.Intensity = amplitudes.Sum()` 的位置，

@@ -59,14 +59,7 @@ fun ParticlesCard(modifier: Modifier = Modifier) {
       )
     }
 
-    Hint(
-      "伪 3D 视差星野，复刻 mfosu（osu! 插件 IGPlayer）。每颗粒子带一个深度值，" +
-        "近处的又大又快、远处的又小又慢，视差就是从这一个除法里出来的。",
-    )
-    Hint(
-      "方向：默认「随机漂移」与 mfosu 一致，是缓慢的随机游走；若觉得太含蓄，" +
-        "试「迎面而来」—— 整场从中心向外扩散，鼓点的冲劲最直观。",
-    )
+    Hint("伪 3D 视差星野，复刻自 mfosu（osu! 插件 IGPlayer/LLin）。")
 
     Spacer(Modifier.width(1.dp))
     EnergyReadout(settings.energyGain)
@@ -81,7 +74,7 @@ fun ParticlesCard(modifier: Modifier = Modifier) {
     )
 
     FloatSlider(
-      label = "粒子尺寸（1 = mfosu 原始比例）",
+      label = "粒子尺寸",
       value = settings.sizeScale,
       range = ParticleSettings.MIN_SIZE_SCALE..ParticleSettings.MAX_SIZE_SCALE,
       display = ParticleSettingsStore.formatSizeScale(settings.sizeScale),
@@ -115,10 +108,7 @@ fun ParticlesCard(modifier: Modifier = Modifier) {
       },
       onChange = { ParticleSettingsStore.setEnergyGain(context, it) },
     )
-    Hint(
-      "调到 0 就是匀速背景，不再随音乐起伏。想看实时数值就盯着上面那行读数：" +
-        "静音时应该接近 0，副歌一般会落到几到十几。",
-    )
+    Hint("粒子受音频影响的移动速度，为 0 时粒子完全静止。")
 
     Spacer(Modifier.width(1.dp))
 
@@ -141,11 +131,6 @@ fun ParticlesCard(modifier: Modifier = Modifier) {
     Spacer(Modifier.width(1.dp))
     DisplayRefreshRow()
     MeasuredFpsRow()
-    Hint(
-      "帧率说明：粒子层跑在 Compose 的帧回调上，而它就是垂直同步的，" +
-        "所以直接跟显示刷新率走，无需额外设置。而频谱/波形/电平表只在新的音频帧到达时更新——" +
-        "那个速率由采集块大小决定（现为 60fps），与显示刷新率无关。",
-    )
 
     ScexGhostButton("恢复默认", onClick = { ParticleSettingsStore.reset(context) })
   }

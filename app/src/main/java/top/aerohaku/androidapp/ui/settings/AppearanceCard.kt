@@ -46,12 +46,11 @@ fun AppearanceCard(modifier: Modifier = Modifier) {
       onValueChange = { VisualizerAppearanceStore.setBackgroundDarken(context, it) },
       dragLabel = "背景暗化",
     )
-    Hint("封面越亮越要加深，否则白字和白色图形会糊在背景里。")
 
     Spacer(Modifier.width(1.dp))
 
     Row(verticalAlignment = Alignment.CenterVertically) {
-      LabeledValue("专辑封面白框（1 物理像素）", modifier = Modifier.weight(1f))
+      LabeledValue("专辑封面白框", modifier = Modifier.weight(1f))
       ScexSwitch(
         checked = appearance.albumArtBorder,
         onCheckedChange = { VisualizerAppearanceStore.setAlbumArtBorder(context, it) },
@@ -94,11 +93,7 @@ fun AppearanceCard(modifier: Modifier = Modifier) {
         onCheckedChange = { VisualizerAppearanceStore.setAutoScale(context, it) },
       )
     }
-    Hint(
-      "版式里的偏移与尺寸都是按开发机（≈1204×710dp）写死的绝对值，小屏上会挤出屏幕。" +
-        "开启后整个部件层会等比缩进当前可用区域；大屏不受影响（只缩不放）。" +
-        "右下角设置按钮与底部提示条不参与缩放，以保证点得中、看得清。",
-    )
+    Hint("根据屏幕尺寸缩放组件，默认开启，可避免默认布局下组件重叠。\n建议开启。")
 
     ScexGhostButton("恢复默认", onClick = { VisualizerAppearanceStore.reset(context) })
   }
